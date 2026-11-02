@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#E4EFF1">
+<title>al:na — I keep the light on</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,400..900;1,6..96,400..900&family=Homemade+Apple&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800;9..40,900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<svg class="defs" aria-hidden="true"><defs>
+  <pattern id="strokes" width="22" height="22" patternUnits="userSpaceOnUse">
+    <rect width="22" height="22" fill="#B8304A"/>
+    <path d="M2 6 C7 2 12 9 18 4" stroke="#D9566C" stroke-width="2.6" fill="none" stroke-linecap="round"/>
+    <path d="M4 16 C9 12 14 19 20 14" stroke="#8E1F37" stroke-width="2.2" fill="none" stroke-linecap="round" opacity=".7"/>
+    <circle cx="16" cy="10" r="1.2" fill="#F2C230" opacity=".85"/>
+    <animateTransform attributeName="patternTransform" type="rotate" from="0 100 90" to="360 100 90" dur="60s" repeatCount="indefinite"/>
+  </pattern>
+  <clipPath id="clL"><path d="M-20 -20 L100 -20 L100 36 L92 62 L108 84 L94 106 L106 128 L98 150 L100 175 L-20 200Z"/></clipPath>
+  <clipPath id="clR"><path d="M220 -20 L100 -20 L100 36 L92 62 L108 84 L94 106 L106 128 L98 150 L100 175 L220 200Z"/></clipPath>
+  <path id="hp" d="M100 170 C40 125 6 92 6 56 C6 28 28 8 54 8 C74 8 90 20 100 36 C110 20 126 8 146 8 C172 8 194 28 194 56 C194 92 160 125 100 170Z"/>
+</defs></svg>
+
+<!-- ===== SCENE ===== -->
+<div class="stage" id="stage">
+  <canvas id="paint" aria-hidden="true"></canvas>
+  <svg class="sun" viewBox="0 0 150 150" aria-hidden="true">
+    <g class="ring r2"><circle cx="75" cy="75" r="68" fill="none" stroke="#C9892B" stroke-width="3" stroke-dasharray="20 8 5 8" stroke-linecap="round" opacity=".5"/></g>
+    <g class="ring"><circle cx="75" cy="75" r="52" fill="none" stroke="#F2C230" stroke-width="5" stroke-dasharray="28 7" stroke-linecap="round" opacity=".8"/></g>
+    <circle cx="75" cy="75" r="36" fill="#F2C230" opacity=".9"/>
+  </svg>
+  <div class="gull" style="top:32%;animation-duration:38s;animation-delay:-6s"><svg viewBox="0 0 22 10"><path d="M1 8 Q6 1 11 7 Q16 1 21 8" fill="none" stroke="#5A6788" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+  <div class="gull" style="top:40%;width:16px;animation-duration:46s;animation-delay:-20s"><svg viewBox="0 0 22 10"><path d="M1 8 Q6 1 11 7 Q16 1 21 8" fill="none" stroke="#5A6788" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+  <div class="gull" style="top:28%;width:13px;animation-duration:54s;animation-delay:-34s"><svg viewBox="0 0 22 10"><path d="M1 8 Q6 1 11 7 Q16 1 21 8" fill="none" stroke="#5A6788" stroke-width="1.6" stroke-linecap="round"/></svg></div>
+
+  <div class="copy">
+    <p class="since">since the 3rd of August, 2022</p>
+    <h1 class="quote" id="quote" aria-label="You broke my heart like that.">You broke my heart like that.</h1>
+    <svg class="stroke" viewBox="0 0 300 20" preserveAspectRatio="none" aria-hidden="true"><path d="M4 13 C60 4 120 19 180 9 S270 6 296 11"/></svg>
+    <p class="promise">I keep the light on, in case you ever find your way back.</p>
+  </div>
+
+  <div class="beam" id="beam" aria-hidden="true"></div>
+  <div class="glow" id="glow" aria-hidden="true"></div>
+
+  <div class="boat" id="boat" aria-hidden="true">
+    <svg viewBox="0 0 42 42" width="40" height="40" overflow="visible">
+      <line x1="21" y1="6" x2="21" y2="31" stroke="#5A6788" stroke-width="1.6"/>
+      <svg id="sailHeart" x="5" y="6" width="32" height="26" viewBox="0 0 200 180"><g clip-path="url(#clR)"><use href="#hp" fill="url(#strokes)"/></g></svg>
+      <path d="M4 31 Q21 39 38 31 L35 35 Q21 42 7 35Z" fill="#22418A"/>
+      <path d="M6 37 Q14 35 21 37 T36 37" stroke="#FCF9F0" stroke-width="1.4" fill="none" opacity=".8"/>
+    </svg>
+  </div>
+
+  <div class="bheart" id="bheart" aria-hidden="true"><div class="inner">
+    <svg id="halfL" viewBox="0 0 200 180"><g clip-path="url(#clL)"><use href="#hp" fill="url(#strokes)"/><use href="#hp" fill="none" stroke="#8E1F37" stroke-width="3" opacity=".5"/></g></svg>
+    <svg id="halfR" viewBox="0 0 200 180"><g clip-path="url(#clR)"><use href="#hp" fill="url(#strokes)"/><use href="#hp" fill="none" stroke="#8E1F37" stroke-width="3" opacity=".5"/></g></svg>
+    <svg viewBox="0 0 200 180">
+      <path class="crack" d="M100 36 L92 62 L108 84 L94 106 L106 128 L98 150 L100 170"/>
+      <path class="shard s1" d="M96 60 l10 5 l-8 8z" fill="#B8304A"/><path class="shard s2" d="M104 82 l9 -4 l-3 10z" fill="#D9566C"/>
+      <path class="shard s3" d="M95 108 l8 3 l-7 6z" fill="#B8304A"/><path class="shard s4" d="M104 128 l6 6 l-9 1z" fill="#F2C230"/>
+    </svg>
+    <div class="hnames" id="hnames"><span>kunal</span><span>sanjana</span></div>
+  </div></div>
+
+  <svg class="coast" viewBox="0 0 240 420" preserveAspectRatio="xMaxYMax meet" aria-hidden="true">
+    <path d="M0 420 C20 360 30 320 60 300 C100 270 170 262 240 250 L240 420Z" fill="#EADFC4"/>
+    <g fill="none" stroke-linecap="round" opacity=".55">
+      <path d="M30 380 C60 360 90 370 120 350" stroke="#C9892B" stroke-width="3"/><path d="M60 330 C100 310 140 318 180 300" stroke="#C9892B" stroke-width="2.5"/>
+      <path d="M90 400 C130 380 170 390 220 360" stroke="#D8C49A" stroke-width="4"/><path d="M150 290 C180 282 210 286 236 276" stroke="#FCF9F0" stroke-width="3"/>
+    </g>
+    <g class="cyp"><path d="M212 300 C202 270 198 230 212 170 C226 230 222 270 212 300Z" fill="#2E5A45"/><path d="M212 190 C208 220 216 240 211 280" stroke="#D8EAE8" stroke-width="1.6" fill="none" opacity=".4"/></g>
+    <g class="tower">
+      <path d="M150 276 L158 92 L178 92 L186 276Z" fill="#FCF9F0"/>
+      <path d="M152.6 216 L155.2 156 L180.8 156 L183.4 216Z" fill="#B8304A"/>
+      <path d="M156.4 128 L157.4 104 L178.6 104 L179.6 128Z" fill="#B8304A"/>
+      <path d="M150 276 L152 236 L184 236 L186 276Z" fill="#B8304A"/>
+      <path d="M160 100 C162 150 158 200 162 270" stroke="#D8C49A" stroke-width="1.5" fill="none" opacity=".7"/>
+      <rect x="164" y="248" width="8" height="18" rx="4" fill="#22418A"/>
+      <rect x="152" y="86" width="32" height="6" rx="2" fill="#22418A"/>
+      <rect x="157" y="60" width="22" height="26" fill="#FFF8E2" stroke="#22418A" stroke-width="2"/>
+      <g id="lampG"><svg id="lampHeart" x="160" y="64" width="16" height="15" viewBox="0 0 200 180"><g clip-path="url(#clL)"><use href="#hp" fill="url(#strokes)"/></g><use href="#hp" fill="none" stroke="#F2C230" stroke-width="10" opacity=".6"/></svg></g>
+      <path d="M154 60 Q168 40 182 60Z" fill="#22418A"/><circle cx="168" cy="43" r="2.4" fill="#22418A"/>
+      <g stroke="#C9892B" stroke-width="1.4" opacity=".85">
+        <line x1="142" y1="276" x2="146" y2="176"/><line x1="194" y1="276" x2="190" y2="176"/>
+        <line x1="143" y1="246" x2="193" y2="246"/><line x1="144" y1="214" x2="192" y2="214"/><line x1="145" y1="182" x2="191" y2="182"/>
+        <line x1="143" y1="246" x2="192" y2="214"/><line x1="144" y1="214" x2="191" y2="182"/>
+      </g>
+      <rect x="186" y="204" width="7" height="9" rx="1" fill="#22418A"/>
+    </g>
+  </svg>
+  <div class="grain" aria-hidden="true"></div>
+</div>
+
+<!-- ===== TOP BAR ===== -->
+<div class="top" id="top">
+  <div class="brand">
+    <div class="logo" aria-label="al:na">al<span class="colon" aria-hidden="true"><svg class="h1" viewBox="0 0 200 180"><use href="#hp"/></svg><svg class="h2" viewBox="0 0 200 180"><use href="#hp"/></svg></span>na</div>
+    <span class="tag">kunal &amp; sanjana</span>
+  </div>
+  <button class="panel rip" id="panel" aria-haspopup="dialog" aria-label="Open the keeper’s log">
+    <span class="p-head"><i class="live"></i>nights the light stayed on
+      <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg></span>
+    <span class="p-time"><span class="ymd" id="cYmd">0y 0m 0d</span><span class="hms"><span id="cH">00</span><span class="sep">:</span><span id="cM">00</span><span class="sep">:</span><span id="cS">00</span></span></span>
+    <span class="p-stats">
+      <span class="stat"><span class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Last seen</span><span class="val" id="lastSeen">…</span></span>
+      <span class="stat"><span class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>Visits</span><span class="val" id="visits">…</span></span>
+      <span class="stat"><span class="lbl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21Z"/><circle cx="12" cy="9.5" r="2.5"/></svg>Visitor IP</span><span class="val" id="ip">…</span></span>
+    </span>
+  </button>
+</div>
+
+<!-- ===== BOTTOM DOCK ===== -->
+<div class="dock" role="note" aria-label="Website under construction">
+  <span class="ico"><svg viewBox="0 0 48 48" aria-hidden="true"><path d="M30 4 L44 18 L24 30 L18 24Z" fill="#C9892B"/><path d="M18 24 L24 30 L20 34 L14 28Z" fill="#5A6788"/><path d="M14 28 L20 34 C16 42 8 44 4 44 C4 40 6 32 14 28Z" fill="#22418A"/></svg></span>
+  <span class="txt">
+    <span class="t1">Website under construction<span id="pct">0%</span></span>
+    <span class="t2">The keeper is repainting the lighthouse. Letters next.</span>
+    <span class="bar" role="progressbar" aria-valuenow="34" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+  </span>
+</div>
+
+<!-- ===== BOTTOM SHEET ===== -->
+<div class="scrim" id="scrim"></div>
+<section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="shTitle" aria-hidden="true">
+  <span class="handle" id="handle"></span>
+  <div class="sh-head"><h2 id="shTitle">The keeper’s log</h2>
+    <button class="close rip" id="close" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+  <p class="sh-sub">the light has stayed on since 3 August 2022</p>
+  <div class="tiles">
+    <div class="tile"><b id="y">0</b><span>years</span></div><div class="tile"><b id="mo">0</b><span>months</span></div><div class="tile"><b id="d">0</b><span>days</span></div>
+    <div class="tile"><b id="h">00</b><span>hours</span></div><div class="tile"><b id="mi">00</b><span>minutes</span></div><div class="tile"><b id="s">00</b><span>seconds</span></div>
+  </div>
+  <div class="total"><span>Nights the light stayed on</span><b id="total">0</b></div>
+  <div class="list">
+    <div class="li"><span class="lic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 17h18l-2 3H5z"/><path d="M12 4v13M12 5l6 9h-6"/></svg></span>
+      <span class="lt">Last seen<em>last ship on the horizon</em></span><span class="lv" id="lastSeen2">…<small id="lastSeenExact"></small></span></div>
+    <div class="li"><span class="lic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M2 15c2 1.5 4 1.5 6 0s4-1.5 6 0 4 1.5 6 0"/><path d="M2 19c2 1.5 4 1.5 6 0s4-1.5 6 0 4 1.5 6 0"/><path d="M7 12l5-8 5 8z"/></svg></span>
+      <span class="lt">Visits<em>ships that passed by</em></span><span class="lv" id="visits2">…</span></div>
+    <div class="li"><span class="lic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M9 21h6M10 18h4l1-8H9z"/><path d="M12 3v3M5 7l2 1.5M19 7l-2 1.5"/></svg></span>
+      <span class="lt">Visitor IP<em>your light from the shore</em></span><span class="lv" id="ip2">…</span></div>
+  </div>
+</section>
+
+<script src="js/main.js" defer></script>
+</body>
+</html>

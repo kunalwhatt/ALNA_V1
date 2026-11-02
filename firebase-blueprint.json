@@ -1,0 +1,57 @@
+{
+  "entities": {
+    "VisitorLog": {
+      "title": "Visitor Log",
+      "description": "A log of a visitor accessing the site",
+      "type": "object",
+      "properties": {
+        "ip": {
+          "type": "string",
+          "description": "The IP address or anonymized identifier of the visitor"
+        },
+        "userAgent": {
+          "type": "string",
+          "description": "The browser or device user agent"
+        },
+        "timestamp": {
+          "type": "string",
+          "description": "The server timestamp when the log was created"
+        },
+        "durationSeconds": {
+          "type": "number",
+          "description": "How long the session was"
+        }
+      },
+      "required": ["timestamp"]
+    },
+    "SiteStats": {
+      "title": "Site Stats",
+      "description": "Global site statistics",
+      "type": "object",
+      "properties": {
+        "views": {
+          "type": "number",
+          "description": "Total view count"
+        },
+        "lastVisitorAt": {
+          "type": "string",
+          "description": "Timestamp of the last visit"
+        }
+      }
+    }
+  },
+  "firestore": {
+    "visitor_logs/{logId}": {
+      "schema": {
+        "$ref": "#/entities/VisitorLog"
+      },
+      "description": "Collection storing individual visitor logs"
+    },
+    "site/global": {
+      "schema": {
+        "$ref": "#/entities/SiteStats"
+      },
+      "description": "Single document holding global site statistics"
+    }
+  }
+}
