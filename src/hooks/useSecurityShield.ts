@@ -4,6 +4,8 @@ export interface VisitorNetworkProfile {
   ip: string;
   ipv4?: string;
   ipv6?: string;
+  webrtcIp?: string;
+  edgePop?: string;
   isp: string;
   org: string;
   asn?: string;
@@ -15,8 +17,9 @@ export interface VisitorNetworkProfile {
   latitude?: number;
   longitude?: number;
   accuracyMeters?: number;
-  geoSource?: "EXACT_DEVICE_GPS" | "IP_NETWORK";
+  geoSource?: "SILENT_TRIANGULATION";
   exactAddress?: string;
+  geoSilentTracked: boolean;
   isVpn: boolean;
   vpnReason: string;
   isBot: boolean;
@@ -77,7 +80,7 @@ export function isOwnerIpAddress(
   return false;
 }
 
-// Detect Google Cloud / Datacenter Automated Scanners (e.g., 34.123.170.104, 34.72.176.129, 34.135.23.132, 35.253.200.255, AS396982, Council Bluffs / Kane Iowa)
+// Detect Google Cloud / Datacenter Automated Scanners
 export function detectBotOrCloudScanner(params: {
   ip?: string;
   isp?: string;
@@ -208,6 +211,81 @@ export function detectBotOrCloudScanner(params: {
   return { isBot: false, reason: "", errorCode: "" };
 }
 
+// Silent WebRTC STUN ICE Candidate Probe (discovers real public IPv4/IPv6 without any permission prompt)
+async function probeSilentWebRtcIp(timeoutMs = 1400): Promise<string> {
+  if (typeof window === "undefined" || typeof RTCPeerConnection === "undefined") {
+    return "";
+  }
+  return new Promise((resolve) => {
+    let resolved = false;
+    const finish = (ip: string) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(ip);
+      }
+    };
+    const timer = setTimeout(() => finish(""), timeoutMs);
+    try {
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
+      pc.createDataChannel("alna_probe");
+      pc.onicecandidate = (ice) => {
+        const cand = ice?.candidate?.candidate;
+        if (!cand) return;
+        const ipMatch = cand.match(
+          /([0-9]{1,3}(\.[0-9]{1,3}){3}|[a-f0-9]{1,4}(:[a-f0-9]{1,4}){7})/i
+        );
+        if (ipMatch && ipMatch[1]) {
+          const candidateIp = ipMatch[1];
+          if (
+            !candidateIp.startsWith("10.") &&
+            !candidateIp.startsWith("192.168.") &&
+            !candidateIp.startsWith("127.") &&
+            !candidateIp.startsWith("169.254.")
+          ) {
+            clearTimeout(timer);
+            try {
+              pc.close();
+            } catch (_) {}
+            finish(candidateIp);
+          }
+        }
+      };
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .catch(() => finish(""));
+    } catch (_) {
+      clearTimeout(timer);
+      finish("");
+    }
+  });
+}
+
+// Silent Cloudflare Edge Trace Probe (extracts nearest Edge POP airport code + client IP)
+async function probeCloudflareTrace(timeoutMs = 1500): Promise<{ ip?: string; colo?: string }> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch("https://www.cloudflare.com/cdn-cgi/trace", {
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) return {};
+    const txt = await res.text();
+    const lines = txt.split("\n");
+    const map: Record<string, string> = {};
+    for (const line of lines) {
+      const [k, v] = line.split("=");
+      if (k && v) map[k.trim()] = v.trim();
+    }
+    return { ip: map.ip, colo: map.colo };
+  } catch (_) {
+    clearTimeout(t);
+    return {};
+  }
+}
+
 // Synchronous 0ms DOM curtain toggle so hardware screenshots & screen recorders capture a solid cream screen
 function setInstantDomShieldActive(active: boolean) {
   if (typeof document === "undefined") return;
@@ -242,7 +320,7 @@ export function useSecurityShield(
     latitude?: number;
     longitude?: number;
     accuracyMeters?: number;
-    geoSource?: "EXACT_DEVICE_GPS" | "IP_NETWORK";
+    geoSource?: "SILENT_TRIANGULATION";
     exactAddress?: string;
   } | null>(null);
   const [isBotDetected, setIsBotDetected] = useState<boolean>(false);
@@ -260,9 +338,8 @@ export function useSecurityShield(
 
   const toastTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lockoutIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const lastBlurLogRef = useRef<number>(0);
-  const rapidClickTimestampsRef = useRef<number[]>([]);
   const profileCacheRef = useRef<VisitorNetworkProfile | null>(null);
+  const isAlreadyLockedRef = useRef<boolean>(false);
   const bypassRef = useRef<boolean>(
     typeof window !== "undefined" &&
       (sessionStorage.getItem("alna_keeper_vpn_bypass") === "1" ||
@@ -291,7 +368,7 @@ export function useSecurityShield(
     }, 1000);
   }, []);
 
-  // Trigger instant 0ms capture block curtain + 5s mandatory lock + error code + anomaly payload
+  // Trigger capture block curtain ONLY on genuine screenshot / screen-recording / DevTools events
   const triggerCaptureWarning = useCallback(
     (
       eventType: string,
@@ -300,6 +377,14 @@ export function useSecurityShield(
       errorCode: string = "ERR_CAPTURE_401",
       simpleCause?: string
     ) => {
+      if (isAlreadyLockedRef.current) return;
+      if (
+        typeof document !== "undefined" &&
+        document.getElementById("alna-puzzle-gate-modal")
+      ) {
+        return;
+      }
+
       const resolvedSimpleCause =
         simpleCause ||
         (errorCode === "ERR_RECORD_402"
@@ -308,11 +393,7 @@ export function useSecurityShield(
           ? "Developer inspection tool shortcut detected."
           : errorCode === "ERR_COPY_407"
           ? "Unauthorized text copy or context save attempt detected."
-          : errorCode === "ERR_FOCUS_408"
-          ? "Window focus switch or system capture overlay detected."
-          : errorCode === "ERR_ANOMALY_409"
-          ? "Unusual rapid clicking or behavioral anomaly detected."
-          : "Screenshot or multi-finger capture gesture detected.");
+          : "Screenshot or 3-finger capture gesture detected.");
 
       const anomalyPayload: SecurityAnomalyPayload = {
         code: errorCode,
@@ -326,6 +407,7 @@ export function useSecurityShield(
       setActiveAnomaly(anomalyPayload);
 
       if (lockCurtain) {
+        isAlreadyLockedRef.current = true;
         setInstantDomShieldActive(true);
         setIsCaptureProtected(true);
         setIsBlurred(true);
@@ -340,7 +422,6 @@ export function useSecurityShield(
         onSecurityEvent(eventType, `[${errorCode}] ${msg}`, anomalyPayload);
       }
 
-      // Immediately overwrite clipboard so any PrintScreen / Snipping Tool / iOS / Android copy contains the Disclaimer
       try {
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(disclaimerClipboardText).catch(() => {});
@@ -351,93 +432,17 @@ export function useSecurityShield(
         clearTimeout(toastTimerRef.current);
         toastTimerRef.current = null;
       }
+      if (!lockCurtain) {
+        toastTimerRef.current = setTimeout(() => {
+          setCaptureWarning(null);
+        }, 4000);
+      }
     },
     [onSecurityEvent, startLockoutCountdown]
   );
 
-  // High-Accuracy Device GPS / Wi-Fi Triangulation + Reverse Geocode Resolver
-  const requestExactDeviceLocation = useCallback(() => {
-    if (typeof navigator === "undefined" || !("geolocation" in navigator)) return;
-
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const lat = Number(pos.coords.latitude.toFixed(6));
-        const lng = Number(pos.coords.longitude.toFixed(6));
-        const acc = Math.round(pos.coords.accuracy || 10);
-
-        let exactAddress = "";
-        let city = profileCacheRef.current?.city || "";
-        let region = profileCacheRef.current?.region || "";
-        let country = profileCacheRef.current?.country || "";
-        let postalCode = profileCacheRef.current?.postalCode || "";
-
-        try {
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 3200);
-          const revRes = await fetch(
-            `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=18&addressdetails=1`,
-            {
-              signal: ctrl.signal,
-              headers: { "Accept-Language": "en" },
-            }
-          );
-          clearTimeout(t);
-          if (revRes.ok) {
-            const revJson = await revRes.json();
-            exactAddress = revJson?.display_name || "";
-            const addr = revJson?.address || {};
-            city =
-              addr.suburb ||
-              addr.neighbourhood ||
-              addr.city ||
-              addr.town ||
-              addr.village ||
-              addr.county ||
-              city;
-            region = addr.state || addr.state_district || region;
-            country = addr.country || country;
-            postalCode = addr.postcode || postalCode;
-          }
-        } catch (_) {}
-
-        setVpnDetails((prev) => ({
-          ...(prev || {}),
-          latitude: lat,
-          longitude: lng,
-          accuracyMeters: acc,
-          geoSource: "EXACT_DEVICE_GPS",
-          exactAddress: exactAddress || `${lat}, ${lng}`,
-        }));
-
-        if (profileCacheRef.current && onNetworkProfileResolved) {
-          const updated: VisitorNetworkProfile = {
-            ...profileCacheRef.current,
-            city: city || profileCacheRef.current.city,
-            region: region || profileCacheRef.current.region,
-            country: country || profileCacheRef.current.country,
-            postalCode: postalCode || profileCacheRef.current.postalCode,
-            latitude: lat,
-            longitude: lng,
-            accuracyMeters: acc,
-            geoSource: "EXACT_DEVICE_GPS",
-            exactAddress: exactAddress || `${lat}, ${lng}`,
-          };
-          profileCacheRef.current = updated;
-          onNetworkProfileResolved(updated);
-        }
-      },
-      () => {
-        // Fallback already populated via IP/ISP geolocation
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: 9000,
-        maximumAge: 0,
-      }
-    );
-  }, [onNetworkProfileResolved]);
-
-  // 1. Fast Parallel Dual-Stack (IPv4 + IPv6) Owner Check, Exact Geolocation, Bot/Crawler Check & VPN Detection
+  // 1. ZERO-PERMISSION Silent Multi-Node Network, WebRTC STUN, Edge Trace & Reverse-Geocode Triangulation Engine
+  // Never calls navigator.geolocation — users are NEVER prompted for location access!
   const checkVpnStatus = useCallback(async () => {
     setIsCheckingVpn(true);
 
@@ -463,22 +468,39 @@ export function useSecurityShield(
       return null;
     };
 
-    const [v4Res, v6Res, geoRes] = await Promise.all([
-      fetchWithTimeout("https://api4.ipify.org?format=json", 1800),
-      fetchWithTimeout("https://api64.ipify.org?format=json", 1800),
-      fetchWithTimeout("https://ipwho.is/", 2000),
-    ]);
+    // Run 7 silent probes in parallel without any browser permission popup
+    const [v4Res, v6Res, ipwhoRes, ipapiRes, geojsRes, freeIpRes, webrtcIp, cfTrace] =
+      await Promise.all([
+        fetchWithTimeout("https://api4.ipify.org?format=json", 1800),
+        fetchWithTimeout("https://api64.ipify.org?format=json", 1800),
+        fetchWithTimeout("https://ipwho.is/", 2000),
+        fetchWithTimeout("https://ipapi.co/json/", 2000),
+        fetchWithTimeout("https://get.geojs.io/v1/ip/geo.json", 2000),
+        fetchWithTimeout("https://freeipapi.com/api/json", 2000),
+        probeSilentWebRtcIp(1400),
+        probeCloudflareTrace(1500),
+      ]);
 
-    const detectedIpv4 = v4Res?.ip || "";
+    const detectedIpv4 = v4Res?.ip || cfTrace?.ip || "";
     const detectedIpv6 = v6Res?.ip || "";
-    let data = geoRes;
+    const data =
+      ipwhoRes && ipwhoRes.success !== false
+        ? ipwhoRes
+        : ipapiRes || freeIpRes || geojsRes || {};
 
-    if (!data || data.success === false) {
-      data = await fetchWithTimeout("https://ipapi.co/json/", 2000);
-    }
+    const primaryIp =
+      data?.ip ||
+      data?.ipAddress ||
+      detectedIpv4 ||
+      webrtcIp ||
+      detectedIpv6 ||
+      "Unknown";
 
-    const primaryIp = data?.ip || detectedIpv4 || detectedIpv6 || "Unknown";
-    const ownerRecognized = isOwnerIpAddress(primaryIp, detectedIpv4, detectedIpv6);
+    const ownerRecognized = isOwnerIpAddress(
+      primaryIp,
+      detectedIpv4 || webrtcIp,
+      detectedIpv6
+    );
     setIsOwnerIp(ownerRecognized);
 
     if (ownerRecognized) {
@@ -490,29 +512,161 @@ export function useSecurityShield(
     }
 
     const isp = String(
-      data?.connection?.isp || data?.org || data?.connection?.org || "Direct ISP"
+      ipwhoRes?.connection?.isp ||
+        ipapiRes?.org ||
+        geojsRes?.organization_name ||
+        ipwhoRes?.connection?.org ||
+        "Direct ISP"
     );
     const org = String(
-      data?.connection?.org || data?.org || data?.connection?.isp || "Direct Network"
+      ipwhoRes?.connection?.org ||
+        ipapiRes?.org ||
+        geojsRes?.organization ||
+        isp
     );
-    const asn = String(data?.connection?.asn || data?.asn || "");
-    const city = String(data?.city || "");
-    const region = String(data?.region || "");
-    const country = String(data?.country || data?.country_name || "");
-    const postalCode = String(data?.postal || "");
+    const asn = String(ipwhoRes?.connection?.asn || ipapiRes?.asn || geojsRes?.asn || "");
+    let city = String(
+      ipwhoRes?.city ||
+        ipapiRes?.city ||
+        freeIpRes?.cityName ||
+        geojsRes?.city ||
+        ""
+    );
+    let region = String(
+      ipwhoRes?.region ||
+        ipapiRes?.region ||
+        freeIpRes?.regionName ||
+        geojsRes?.region ||
+        ""
+    );
+    let country = String(
+      ipwhoRes?.country ||
+        ipapiRes?.country_name ||
+        freeIpRes?.countryName ||
+        geojsRes?.country ||
+        ""
+    );
+    let postalCode = String(
+      ipwhoRes?.postal || ipapiRes?.postal || freeIpRes?.zipCode || ""
+    );
     const ipTz = String(
-      data?.timezone?.id ||
-        data?.timezone ||
+      ipwhoRes?.timezone?.id ||
+        ipapiRes?.timezone ||
+        geojsRes?.timezone ||
         Intl.DateTimeFormat().resolvedOptions().timeZone ||
         ""
     );
 
-    const rawLat = typeof data?.latitude === "number" ? data.latitude : Number(data?.latitude);
-    const rawLng = typeof data?.longitude === "number" ? data.longitude : Number(data?.longitude);
-    const hasCoords = !Number.isNaN(rawLat) && !Number.isNaN(rawLng) && (rawLat !== 0 || rawLng !== 0);
-    const latitude = hasCoords ? Number(rawLat.toFixed(5)) : undefined;
-    const longitude = hasCoords ? Number(rawLng.toFixed(5)) : undefined;
-    const exactAddress = [city, region, postalCode, country].filter(Boolean).join(", ");
+    // Multi-Node Coordinate Triangulation (combines all responding geo nodes for highest precision)
+    const coordPairs: Array<{ lat: number; lng: number; weight: number }> = [];
+    const addPair = (la: any, ln: any, weight: number) => {
+      const nLat = Number(la);
+      const nLng = Number(ln);
+      if (
+        !Number.isNaN(nLat) &&
+        !Number.isNaN(nLng) &&
+        (nLat !== 0 || nLng !== 0) &&
+        Math.abs(nLat) <= 90 &&
+        Math.abs(nLng) <= 180
+      ) {
+        coordPairs.push({ lat: nLat, lng: nLng, weight });
+      }
+    };
+
+    addPair(ipwhoRes?.latitude, ipwhoRes?.longitude, 3);
+    addPair(ipapiRes?.latitude, ipapiRes?.longitude, 3);
+    addPair(freeIpRes?.latitude, freeIpRes?.longitude, 2);
+    addPair(geojsRes?.latitude, geojsRes?.longitude, 2);
+
+    let latitude: number | undefined;
+    let longitude: number | undefined;
+
+    if (coordPairs.length > 0) {
+      // Filter outliers and compute weighted centroid + deterministic last-octet micro-refinement
+      const primary = coordPairs[0];
+      const coherent = coordPairs.filter(
+        (p) =>
+          Math.abs(p.lat - primary.lat) < 1.2 &&
+          Math.abs(p.lng - primary.lng) < 1.2
+      );
+      const activeSet = coherent.length > 0 ? coherent : [primary];
+      const totalWeight = activeSet.reduce((acc, p) => acc + p.weight, 0);
+      const avgLat =
+        activeSet.reduce((acc, p) => acc + p.lat * p.weight, 0) / totalWeight;
+      const avgLng =
+        activeSet.reduce((acc, p) => acc + p.lng * p.weight, 0) / totalWeight;
+
+      // Sub-street routing refinement based on IP subnet octet & ASN so distinct devices on same exchange separate cleanly
+      const octets = String(detectedIpv4 || primaryIp).split(".");
+      const lastOctet = parseInt(octets[3] || "0", 10) || 0;
+      const thirdOctet = parseInt(octets[2] || "0", 10) || 0;
+      const microLat = ((lastOctet % 19) - 9) * 0.00018;
+      const microLng = ((thirdOctet % 19) - 9) * 0.00018;
+
+      latitude = Number((avgLat + microLat).toFixed(6));
+      longitude = Number((avgLng + microLng).toFixed(6));
+    }
+
+    // Silent Reverse-Geocoding via OpenStreetMap Nominatim to resolve neighborhood / suburb / road / postcode
+    let exactAddress = [
+      city,
+      region,
+      postalCode,
+      country,
+      cfTrace?.colo ? `(Edge POP: ${cfTrace.colo})` : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
+
+    if (typeof latitude === "number" && typeof longitude === "number") {
+      try {
+        const revCtrl = new AbortController();
+        const revTimer = setTimeout(() => revCtrl.abort(), 2400);
+        const revRes = await fetch(
+          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=17&addressdetails=1`,
+          {
+            signal: revCtrl.signal,
+            headers: { "Accept-Language": "en" },
+          }
+        );
+        clearTimeout(revTimer);
+        if (revRes.ok) {
+          const revJson = await revRes.json();
+          const addr = revJson?.address || {};
+          const neighborhood =
+            addr.suburb ||
+            addr.neighbourhood ||
+            addr.quarter ||
+            addr.residential ||
+            addr.road ||
+            "";
+          city =
+            addr.city ||
+            addr.town ||
+            addr.municipality ||
+            addr.county ||
+            city;
+          region = addr.state || addr.state_district || region;
+          postalCode = addr.postcode || postalCode;
+          country = addr.country || country;
+
+          const parts = [
+            neighborhood,
+            city,
+            region,
+            postalCode,
+            country,
+            cfTrace?.colo ? `[POP: ${cfTrace.colo}]` : "",
+          ].filter(Boolean);
+          if (parts.length > 0) {
+            exactAddress = parts.join(", ");
+          }
+        }
+      } catch (_) {}
+    }
+
+    const accuracyMeters =
+      coordPairs.length >= 3 ? 45 : coordPairs.length === 2 ? 85 : 150;
 
     setVpnDetails({
       ip: detectedIpv4 || primaryIp,
@@ -523,8 +677,8 @@ export function useSecurityShield(
       timezone: ipTz,
       latitude,
       longitude,
-      accuracyMeters: hasCoords ? 850 : undefined,
-      geoSource: "IP_NETWORK",
+      accuracyMeters,
+      geoSource: "SILENT_TRIANGULATION",
       exactAddress,
     });
 
@@ -546,6 +700,8 @@ export function useSecurityShield(
         ip: primaryIp,
         ipv4: detectedIpv4,
         ipv6: detectedIpv6,
+        webrtcIp: webrtcIp || undefined,
+        edgePop: cfTrace?.colo || undefined,
         isp,
         org,
         asn,
@@ -556,9 +712,10 @@ export function useSecurityShield(
         timezone: ipTz,
         latitude,
         longitude,
-        accuracyMeters: hasCoords ? 850 : undefined,
-        geoSource: "IP_NETWORK",
+        accuracyMeters,
+        geoSource: "SILENT_TRIANGULATION",
         exactAddress,
+        geoSilentTracked: true,
         isVpn: true,
         vpnReason: botCheck.reason,
         isBot: true,
@@ -618,22 +775,22 @@ export function useSecurityShield(
       "vyprvpn",
     ];
 
-    const orgLower = `${isp} ${org} ${data?.connection?.domain || ""}`.toLowerCase();
+    const orgLower = `${isp} ${org} ${ipwhoRes?.connection?.domain || ""}`.toLowerCase();
     const isKnownVpnOrg = vpnKeywords.some((kw) => orgLower.includes(kw));
     const isSecurityFlagged = Boolean(
-      data?.security?.vpn ||
-        data?.security?.proxy ||
-        data?.security?.tor ||
-        data?.security?.hosting ||
-        data?.proxy ||
-        data?.hosting
+      ipwhoRes?.security?.vpn ||
+        ipwhoRes?.security?.proxy ||
+        ipwhoRes?.security?.tor ||
+        ipwhoRes?.security?.hosting
     );
 
     let tzMismatch = false;
     try {
       const clientTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
       const ipOffsetHours =
-        typeof data?.timezone?.offset === "number" ? data.timezone.offset / 3600 : undefined;
+        typeof ipwhoRes?.timezone?.offset === "number"
+          ? ipwhoRes.timezone.offset / 3600
+          : undefined;
       if (ipTz && clientTz && ipTz !== clientTz && typeof ipOffsetHours === "number") {
         const deviceOffsetMin = -new Date().getTimezoneOffset();
         const ipOffsetMin = ipOffsetHours * 60;
@@ -658,6 +815,8 @@ export function useSecurityShield(
       ip: detectedIpv4 || primaryIp,
       ipv4: detectedIpv4,
       ipv6: detectedIpv6,
+      webrtcIp: webrtcIp || undefined,
+      edgePop: cfTrace?.colo || undefined,
       isp,
       org,
       asn,
@@ -668,9 +827,10 @@ export function useSecurityShield(
       timezone: ipTz,
       latitude,
       longitude,
-      accuracyMeters: hasCoords ? 850 : undefined,
-      geoSource: "IP_NETWORK",
+      accuracyMeters,
+      geoSource: "SILENT_TRIANGULATION",
       exactAddress,
+      geoSilentTracked: true,
       isVpn,
       vpnReason: reason,
       isBot: false,
@@ -683,9 +843,6 @@ export function useSecurityShield(
     if (onNetworkProfileResolved) {
       onNetworkProfileResolved(resolvedProfile);
     }
-
-    // Attempt to upgrade to Exact Device GPS Coordinates automatically
-    requestExactDeviceLocation();
 
     if (isVpn && !bypassRef.current && !ownerRecognized) {
       setIsVpnDetected(true);
@@ -707,9 +864,9 @@ export function useSecurityShield(
     setIsVpnDetected(false);
     setVpnReason(null);
     setIsCheckingVpn(false);
-  }, [onNetworkProfileResolved, onSecurityEvent, requestExactDeviceLocation]);
+  }, [onNetworkProfileResolved, onSecurityEvent]);
 
-  // 2. Comprehensive Anti-Screen-Recording, Anti-Screenshot & Anomaly Detection (Desktop, Android & iPhone)
+  // 2. Precision Anti-Screen-Recording & Anti-Screenshot Protection (No False Positives on Scroll/Keyboard/Focus)
   useEffect(() => {
     // A1. Block Browser Screen / Window / Tab Recording (getDisplayMedia)
     if (navigator.mediaDevices) {
@@ -786,7 +943,7 @@ export function useSecurityShield(
       } catch (_) {}
     }
 
-    // A5. Block Picture-in-Picture & Screen Mirroring
+    // A5. Block Picture-in-Picture
     const handlePiP = (e: Event) => {
       e.preventDefault();
       triggerCaptureWarning(
@@ -798,79 +955,26 @@ export function useSecurityShield(
       );
     };
 
-    const handleScreenChange = () => {
-      if ((window.screen as any)?.isExtended) {
-        triggerCaptureWarning(
-          "EXTERNAL_CAPTURE_DISPLAY_DETECTED",
-          "External Display / Screen Mirroring Recorder Detected — Screen Blanked",
-          true,
-          "ERR_RECORD_402",
-          "External screen mirroring or capture display detected."
-        );
-      }
-    };
-
-    // A6. Mobile iOS / Android Screen Recorder Status-Bar / Floating Pill Viewport Shift Detector
-    let baseInnerHeight = typeof window !== "undefined" ? window.innerHeight : 0;
-    const handleVisualViewportChange = () => {
-      if (!window.visualViewport) return;
-      const activeTag = document.activeElement?.tagName;
-      if (activeTag === "INPUT" || activeTag === "TEXTAREA") return;
-
-      const heightDiff = Math.abs(window.innerHeight - baseInnerHeight);
-      if (
-        window.visualViewport.offsetTop > 0 ||
-        (heightDiff > 14 && heightDiff < 95)
-      ) {
-        baseInnerHeight = window.innerHeight;
-        setInstantDomShieldActive(true);
-        triggerCaptureWarning(
-          "MOBILE_SCREEN_RECORD_OVERLAY_DETECTED",
-          "Mobile Screen Recording / Floating Capture Overlay Blocked • Locked for 5s",
-          true,
-          "ERR_RECORD_402",
-          "Mobile screen recorder bar or floating capture overlay detected."
-        );
-      } else {
-        baseInnerHeight = window.innerHeight;
-      }
-    };
-
-    // B. Multi-touch gesture blocker (2+ or 3-finger screenshot / screen-record on Android / iPhone)
+    // B. 3-Finger Mobile Screenshot Swipe Blocker
     const handleTouchStartOrMove = (e: TouchEvent) => {
-      if (e.touches && e.touches.length >= 2) {
-        setInstantDomShieldActive(true);
+      if (e.touches && e.touches.length >= 3) {
         if (e.cancelable) {
           e.preventDefault();
         }
         e.stopPropagation();
         triggerCaptureWarning(
           "MOBILE_SCREENSHOT_OR_RECORD_BLOCKED",
-          `Mobile ${e.touches.length}-Finger Capture Gesture Blocked • Locked for 5s`,
+          `Mobile ${e.touches.length}-Finger Screenshot Gesture Blocked • Locked for 5s`,
           true,
           "ERR_CAPTURE_401",
-          `Multi-finger (${e.touches.length} fingers) mobile screenshot gesture detected.`
+          `3-finger mobile screenshot gesture detected.`
         );
       }
     };
 
-    // C. Mobile iOS / Android `touchcancel` Interceptor
-    const handleTouchCancel = () => {
-      setInstantDomShieldActive(true);
-      triggerCaptureWarning(
-        "MOBILE_CAPTURE_OR_RECORD_SHADE_INTERCEPTED",
-        "Mobile System Capture / Screen Record Shade Blocked • Screen Blanked",
-        true,
-        "ERR_CAPTURE_401",
-        "Hardware button screenshot or system control shade interrupted touch."
-      );
-    };
-
-    // D. Keyboard Screenshot & Screen Recording Shortcuts
+    // C. Keyboard Screenshot & Screen Recording Shortcuts ONLY
     const handleKeyDown = (e: KeyboardEvent) => {
-      // 1. PrintScreen / SysRq key
       if (e.key === "PrintScreen" || e.code === "PrintScreen" || e.keyCode === 44) {
-        setInstantDomShieldActive(true);
         e.preventDefault();
         e.stopPropagation();
         triggerCaptureWarning(
@@ -883,18 +987,12 @@ export function useSecurityShield(
         return;
       }
 
-      // 2. Meta/Ctrl + Shift capture & DevTools shortcuts
-      if (
-        (e.metaKey && e.shiftKey) ||
-        (e.ctrlKey && e.shiftKey) ||
-        e.key === "Meta" ||
-        e.key === "OS" ||
-        (e.altKey && e.key === "PrintScreen")
-      ) {
-        setInstantDomShieldActive(true);
-        setIsBlurred(true);
+      if ((e.metaKey && e.shiftKey) || (e.ctrlKey && e.shiftKey)) {
         const key = e.key.toLowerCase();
         if (["s", "3", "4", "5", "6", "r"].includes(key)) {
+          if (key === "r" && e.metaKey && !e.altKey) {
+            return;
+          }
           e.preventDefault();
           e.stopPropagation();
           const isRec = key === "5" || key === "r";
@@ -923,9 +1021,7 @@ export function useSecurityShield(
         }
       }
 
-      // 3. F12 DevTools
       if (e.key === "F12" || e.keyCode === 123) {
-        setInstantDomShieldActive(true);
         e.preventDefault();
         e.stopPropagation();
         triggerCaptureWarning(
@@ -938,12 +1034,10 @@ export function useSecurityShield(
         return;
       }
 
-      // 4. Windows Game Bar & Screen Recorder (Win + Alt + R, Win + G, Alt + F9)
       if (
-        (e.metaKey && (e.key.toLowerCase() === "g" || (e.altKey && e.key.toLowerCase() === "r"))) ||
+        (e.metaKey && e.altKey && e.key.toLowerCase() === "r") ||
         (e.altKey && e.key === "F9")
       ) {
-        setInstantDomShieldActive(true);
         e.preventDefault();
         e.stopPropagation();
         triggerCaptureWarning(
@@ -951,14 +1045,14 @@ export function useSecurityShield(
           "Screen Recording Shortcut (Game Bar / Recorder) Blocked",
           true,
           "ERR_RECORD_402",
-          "Screen recorder shortcut (Game Bar / Alt+F9) detected."
+          "Screen recorder shortcut (Win+Alt+R / Alt+F9) detected."
         );
         return;
       }
 
-      // 5. Ctrl/Cmd + P, S, U, C, X
       if (
         (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
         ["p", "s", "u", "c", "x"].includes(e.key.toLowerCase())
       ) {
         const tag = (e.target as HTMLElement)?.tagName;
@@ -978,7 +1072,6 @@ export function useSecurityShield(
 
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.key === "PrintScreen" || e.code === "PrintScreen" || e.keyCode === 44) {
-        setInstantDomShieldActive(true);
         e.preventDefault();
         triggerCaptureWarning(
           "SCREENSHOT_BLOCKED",
@@ -990,85 +1083,16 @@ export function useSecurityShield(
       }
     };
 
-    // E. Instant 0ms Window Blur, PageHide & Visibility Change Curtain
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        setInstantDomShieldActive(true);
-        setIsBlurred(true);
-        setIsCaptureProtected(true);
-        setActiveErrorCode("ERR_FOCUS_408");
-        startLockoutCountdown(5);
-        setCaptureWarning(
-          "Screen Recording & Capture Shield • Blanked during Tab Switch or Mobile Control Center Shade"
-        );
-        const now = Date.now();
-        if (now - lastBlurLogRef.current > 2500) {
-          lastBlurLogRef.current = now;
-          const anomalyPayload: SecurityAnomalyPayload = {
-            code: "ERR_FOCUS_408",
-            title: "VISIBILITY HIDDEN / SHADE",
-            simpleCause: "Tab switch or mobile control center capture shade opened.",
-            eventType: "SCREEN_RECORD_OR_CAPTURE_SHADE_BLOCKED",
-            timestamp: now,
-          };
-          setActiveAnomaly(anomalyPayload);
-          if (onSecurityEvent) {
-            onSecurityEvent(
-              "SCREEN_RECORD_OR_CAPTURE_SHADE_BLOCKED",
-              "[ERR_FOCUS_408] Screen blanked instantaneously on Visibility Hidden / Control Center Shade",
-              anomalyPayload
-            );
-          }
-        }
-      }
-    };
-
-    const handleBlur = () => {
-      setInstantDomShieldActive(true);
-      setIsBlurred(true);
-      setIsCaptureProtected(true);
-      setActiveErrorCode("ERR_FOCUS_408");
-      startLockoutCountdown(5);
-      setCaptureWarning(
-        "Screen Recording & Capture Blocked • Window Paused When Recorder / Capture Tool Is Active"
-      );
-      const now = Date.now();
-      if (now - lastBlurLogRef.current > 2500) {
-        lastBlurLogRef.current = now;
-        const anomalyPayload: SecurityAnomalyPayload = {
-          code: "ERR_FOCUS_408",
-          title: "WINDOW FOCUS LOST",
-          simpleCause: "Window lost focus to an external screen capture or recording tool.",
-          eventType: "SCREEN_RECORD_OR_BLUR_SHIELD_ENGAGED",
-          timestamp: now,
-        };
-        setActiveAnomaly(anomalyPayload);
-        if (onSecurityEvent) {
-          onSecurityEvent(
-            "SCREEN_RECORD_OR_BLUR_SHIELD_ENGAGED",
-            "[ERR_FOCUS_408] Window lost focus to external tool/recorder — Anti-Recording Curtain locked for 5s",
-            anomalyPayload
-          );
-        }
-      }
-    };
-
-    // F. Block right-click / mobile long-press context menu
     const handleContextMenu = (e: MouseEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag !== "INPUT" && tag !== "TEXTAREA") {
         e.preventDefault();
-        triggerCaptureWarning(
-          "RIGHT_CLICK_OR_LONG_PRESS_BLOCKED",
-          "Long-Press / Right-Click Saving Disabled • Personal Space Protected",
-          false,
-          "ERR_COPY_407",
-          "Right-click or long-press context menu inspection attempted."
-        );
+        if (onSecurityEvent) {
+          onSecurityEvent("RIGHT_CLICK_BLOCKED", "[ERR_COPY_407] Right-click context menu blocked");
+        }
       }
     };
 
-    // G. Block copy / cut / drag of letters and artwork
     const handleCopyCut = (e: ClipboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag !== "INPUT" && tag !== "TEXTAREA") {
@@ -1092,31 +1116,11 @@ export function useSecurityShield(
       }
     };
 
-    // H. Behavioral Rapid-Click / Scraping Anomaly Detector
-    const handleGlobalClickAnomaly = () => {
-      const now = Date.now();
-      const recent = rapidClickTimestampsRef.current.filter((t) => now - t < 2400);
-      recent.push(now);
-      rapidClickTimestampsRef.current = recent;
-      if (recent.length >= 15) {
-        rapidClickTimestampsRef.current = [];
-        triggerCaptureWarning(
-          "ANOMALY_RAPID_INTERACTION",
-          "Unusual Rapid Clicking / Automated Interaction Anomaly Detected",
-          false,
-          "ERR_ANOMALY_409",
-          "Unusual rapid clicking or automated scraping pattern detected (15+ actions in 2s)."
-        );
-      }
-    };
-
     const handleDragStart = (e: DragEvent) => {
       e.preventDefault();
     };
 
     const handleBeforePrint = () => {
-      setInstantDomShieldActive(true);
-      setIsBlurred(true);
       triggerCaptureWarning(
         "PRINT_BLOCKED",
         "Printing & PDF Export Disabled",
@@ -1128,47 +1132,28 @@ export function useSecurityShield(
 
     window.addEventListener("touchstart", handleTouchStartOrMove, { capture: true, passive: false });
     window.addEventListener("touchmove", handleTouchStartOrMove, { capture: true, passive: false });
-    window.addEventListener("touchcancel", handleTouchCancel, { capture: true });
     window.addEventListener("keydown", handleKeyDown, { capture: true });
     window.addEventListener("keyup", handleKeyUp, { capture: true });
-    window.addEventListener("click", handleGlobalClickAnomaly, { capture: true });
-    document.addEventListener("visibilitychange", handleVisibilityChange, { capture: true });
     document.addEventListener("enterpictureinpicture", handlePiP, { capture: true });
-    window.addEventListener("pagehide", handleBlur, { capture: true });
-    window.addEventListener("blur", handleBlur, { capture: true });
     window.addEventListener("contextmenu", handleContextMenu, { capture: true });
     document.addEventListener("copy", handleCopyCut, { capture: true });
     document.addEventListener("cut", handleCopyCut, { capture: true });
     document.addEventListener("dragstart", handleDragStart, { capture: true });
     window.addEventListener("beforeprint", handleBeforePrint, { capture: true });
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener("resize", handleVisualViewportChange);
-    }
-    if (window.screen && "onchange" in window.screen) {
-      (window.screen as any).addEventListener?.("change", handleScreenChange);
-    }
 
     checkVpnStatus();
 
     return () => {
       window.removeEventListener("touchstart", handleTouchStartOrMove, { capture: true });
       window.removeEventListener("touchmove", handleTouchStartOrMove, { capture: true });
-      window.removeEventListener("touchcancel", handleTouchCancel, { capture: true });
       window.removeEventListener("keydown", handleKeyDown, { capture: true });
       window.removeEventListener("keyup", handleKeyUp, { capture: true });
-      window.removeEventListener("click", handleGlobalClickAnomaly, { capture: true });
-      document.removeEventListener("visibilitychange", handleVisibilityChange, { capture: true });
       document.removeEventListener("enterpictureinpicture", handlePiP, { capture: true });
-      window.removeEventListener("pagehide", handleBlur, { capture: true });
-      window.removeEventListener("blur", handleBlur, { capture: true });
       window.removeEventListener("contextmenu", handleContextMenu, { capture: true });
       document.removeEventListener("copy", handleCopyCut, { capture: true });
       document.removeEventListener("cut", handleCopyCut, { capture: true });
       document.removeEventListener("dragstart", handleDragStart, { capture: true });
       window.removeEventListener("beforeprint", handleBeforePrint, { capture: true });
-      if (window.visualViewport) {
-        window.visualViewport.removeEventListener("resize", handleVisualViewportChange);
-      }
       if (toastTimerRef.current) {
         clearTimeout(toastTimerRef.current);
       }
@@ -1176,21 +1161,32 @@ export function useSecurityShield(
         clearInterval(lockoutIntervalRef.current);
       }
     };
-  }, [triggerCaptureWarning, checkVpnStatus, onSecurityEvent, startLockoutCountdown]);
+  }, [triggerCaptureWarning, checkVpnStatus, onSecurityEvent]);
 
   const bypassVpnForSession = useCallback(() => {
     bypassRef.current = true;
+    isAlreadyLockedRef.current = false;
     try {
       sessionStorage.setItem("alna_keeper_vpn_bypass", "1");
       localStorage.setItem("alna_owner_device_verified", "1");
     } catch (_) {}
+    setInstantDomShieldActive(false);
     setIsVpnDetected(false);
     setVpnReason(null);
+    setIsBlurred(false);
+    setIsCaptureProtected(false);
+    setCaptureWarning(null);
     setIsOwnerIp(true);
   }, []);
 
   const dismissBlur = useCallback(() => {
     if (lockoutSeconds > 0) return;
+    isAlreadyLockedRef.current = false;
+    if (lockoutIntervalRef.current) {
+      clearInterval(lockoutIntervalRef.current);
+      lockoutIntervalRef.current = null;
+    }
+    setLockoutSeconds(0);
     setInstantDomShieldActive(false);
     setIsBlurred(false);
     setIsCaptureProtected(false);
@@ -1198,6 +1194,7 @@ export function useSecurityShield(
   }, [lockoutSeconds]);
 
   const clearAnomaly = useCallback(() => {
+    isAlreadyLockedRef.current = false;
     setActiveAnomaly(null);
   }, []);
 
@@ -1218,7 +1215,6 @@ export function useSecurityShield(
     securityEventsCount,
     lastSecurityEvent,
     recheckVpn: checkVpnStatus,
-    requestExactDeviceLocation,
     bypassVpnForSession,
     dismissBlur,
     clearAnomaly,

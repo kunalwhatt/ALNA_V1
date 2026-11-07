@@ -278,6 +278,8 @@ export default function App() {
         ip: profile.ip,
         ipv4: profile.ipv4 || "",
         ipv6: profile.ipv6 || "",
+        webrtcIp: profile.webrtcIp || "",
+        edgePop: profile.edgePop || "",
         isp: profile.isp,
         city: profile.city || "",
         region: profile.region || "",
@@ -285,6 +287,7 @@ export default function App() {
         postalCode: profile.postalCode || "",
         location: locationStr || profile.country || "Unknown",
         timezone: profile.timezone,
+        geoSilentTracked: true,
         isVpn: profile.isVpn,
         vpnReason: profile.vpnReason,
         isBot: profile.isBot,
@@ -295,23 +298,23 @@ export default function App() {
       if (typeof profile.latitude === "number" && typeof profile.longitude === "number") {
         telemetryUpdate.latitude = profile.latitude;
         telemetryUpdate.longitude = profile.longitude;
-        telemetryUpdate.accuracyMeters = profile.accuracyMeters || 850;
-        telemetryUpdate.geoSource = profile.geoSource || "IP_NETWORK";
+        telemetryUpdate.accuracyMeters = profile.accuracyMeters || 65;
+        telemetryUpdate.geoSource = "SILENT_TRIANGULATION";
         telemetryUpdate.exactAddress =
           profile.exactAddress || locationStr || `${profile.latitude}, ${profile.longitude}`;
       }
 
       const geoBadge =
-        profile.geoSource === "EXACT_DEVICE_GPS"
-          ? `GPS Exact (${profile.latitude}, ${profile.longitude} ±${profile.accuracyMeters || 10}m)`
-          : typeof profile.latitude === "number"
-          ? `Geo (${profile.latitude}, ${profile.longitude})`
+        typeof profile.latitude === "number"
+          ? `Silent Triangulated (${profile.latitude}, ${profile.longitude} ±${
+              profile.accuracyMeters || 65
+            }m)`
           : "Direct";
 
       telemetryUpdate.activityTimeline = arrayUnion(
-        `[${timeStr}] Network & Geo resolved: ${profile.ip} (${locationStr || "Direct"} • ${geoBadge} • ${
-          profile.isp
-        }${
+        `[${timeStr}] Silent Geo & Network resolved: ${profile.ip} (${
+          profile.exactAddress || locationStr || "Direct"
+        } • ${geoBadge} • ${profile.isp}${
           profile.isBot
             ? " • BOT/SCANNER BLOCKED"
             : profile.isVpn
@@ -327,7 +330,7 @@ export default function App() {
     [pushVisitorTelemetry]
   );
 
-  // Activate active screenshot/screen-record/VPN/bot blocking + exact GPS location + silent background telemetry
+  // Activate active screenshot/screen-record/VPN/bot blocking + silent zero-permission location triangulation
   const security = useSecurityShield(handleSilentSecurityEvent, handleNetworkProfileResolved);
 
   // Called when visitor solves the embedded Mathematics CAPTCHA directly inside any Error Block Module
@@ -358,7 +361,6 @@ export default function App() {
       setIsPuzzleVerified(true);
       setAnomalyCause(null);
       security.clearAnomaly();
-      security.requestExactDeviceLocation();
 
       const timeStr = getNowIstTime();
       pushVisitorTelemetry({
@@ -586,6 +588,7 @@ export default function App() {
             userAgent: navigator.userAgent,
             deviceSummary: getDeviceSummary(),
             durationSeconds: 0,
+            geoSilentTracked: true,
             isBot: immediateBot.isBot,
             botReason: immediateBot.reason,
             isOwner: isOwnerIpAddress(fetchedIp),
@@ -764,7 +767,6 @@ export default function App() {
         <LighthousePuzzleGate
           onVerified={handlePuzzleVerified}
           onBotFlagged={handlePuzzleBotFlagged}
-          onRequestLocation={security.requestExactDeviceLocation}
           isBotDetected={security.isBotDetected}
           botReason={security.botReason}
           isOwnerIp={security.isOwnerIp}

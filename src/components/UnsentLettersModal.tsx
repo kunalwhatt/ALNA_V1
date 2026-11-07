@@ -77,37 +77,30 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
   const words = currentParagraph.trim().split(/\s+/).filter(Boolean);
   const isComplete = revealedWordCount >= words.length;
 
-  // On Android/iPhone, non-owner visitors must keep 1 finger touching the glass to unveil text
-  // (lifting finger to press Power+Volume or using 2/3 fingers immediately veils the letter in 0ms!)
-  const isMobileVeiled = isMobileDevice && !isOwnerIp && !isTouchHolding;
+  // Only veil on mobile if a 3-finger screenshot gesture is actively detected
+  const isMobileVeiled = isMobileDevice && !isOwnerIp && isTouchHolding;
 
   const handleMobileTouchStart = (e: React.TouchEvent) => {
-    if (e.touches.length === 1) {
+    if (e.touches.length >= 3) {
       setIsTouchHolding(true);
-    } else if (e.touches.length >= 2) {
-      setIsTouchHolding(false);
       if (onSecurityCaptureBlocked) {
         onSecurityCaptureBlocked(
           `Blocked ${e.touches.length}-finger screenshot gesture inside Unsent Letters (#${currentIndex + 1})`
         );
       }
+    } else {
+      setIsTouchHolding(false);
     }
   };
 
   const handleMobileTouchEnd = (e: React.TouchEvent) => {
-    if (e.touches.length === 0) {
+    if (e.touches.length < 3) {
       setIsTouchHolding(false);
     }
   };
 
   const handleMobileTouchCancel = () => {
-    // Fires immediately on iOS/Android when Power+Volume or 3-finger screenshot interrupts touch!
     setIsTouchHolding(false);
-    if (onSecurityCaptureBlocked) {
-      onSecurityCaptureBlocked(
-        `Intercepted mobile system screenshot / touchcancel inside Letter #${currentIndex + 1}`
-      );
-    }
   };
 
   // Font family selector

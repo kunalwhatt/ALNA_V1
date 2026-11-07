@@ -773,14 +773,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack, db }) =>
                                 </span>
                                 <span
                                   className={`px-1 py-0.2 text-[8.5px] border border-[#0A0D14] ${
-                                    geo.geoSource === "EXACT_DEVICE_GPS"
+                                    geo.geoSilentTracked
                                       ? "bg-[#D1FAE5] text-[#065F46]"
                                       : "bg-[#FFF6D6] text-[#0A0D14]"
                                   }`}
                                 >
-                                  {geo.geoSource === "EXACT_DEVICE_GPS"
-                                    ? `GPS ±${geo.accuracyMeters}m`
-                                    : "IP GEO"}
+                                  {geo.geoSilentTracked
+                                    ? `SILENT ±${geo.accuracyMeters}m`
+                                    : "LEGACY LOG"}
                                 </span>
                               </div>
 
@@ -1089,14 +1089,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onBack, db }) =>
                                   </div>
                                 </div>
 
-                                {/* Row 2: Real Map View Module & Exact Pin for this Visitor */}
-                                <InlineVisitorMiniMap
-                                  geo={geo}
-                                  onOpenInGeoView={(id) => {
-                                    setSelectedGeoLogId(id);
-                                    setActiveTab("geoview");
-                                  }}
-                                />
+                                {/* Row 2: Real Map View Module & Exact Pin — shown only for visits from now onwards */}
+                                {geo.geoSilentTracked ? (
+                                  <InlineVisitorMiniMap
+                                    geo={geo}
+                                    onOpenInGeoView={(id) => {
+                                      setSelectedGeoLogId(id);
+                                      setActiveTab("geoview");
+                                    }}
+                                  />
+                                ) : (
+                                  <div className="p-3 bg-[#FFF6D6] border-2 border-[#0A0D14] shadow-[3px_3px_0px_#0A0D14] text-xs font-mono text-[#0A0D14] flex items-center justify-between">
+                                    <span>
+                                      <strong>Legacy Log (Recorded Prior to Silent Triangulation Reset):</strong>{" "}
+                                      Per Keeper policy, <strong>Real Map &amp; Geo View</strong> only pins new visits from now onwards.
+                                    </span>
+                                    <span className="px-2 py-0.5 bg-white border border-[#0A0D14] text-[10px] font-extrabold uppercase">
+                                      PRE-CUTOFF
+                                    </span>
+                                  </div>
+                                )}
                               </td>
                             </tr>
                           )}

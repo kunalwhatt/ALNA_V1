@@ -199,7 +199,10 @@ export const LighthousePuzzleGate: React.FC<LighthousePuzzleGateProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[9800] flex items-center justify-center bg-[#1B2A4A]/45 backdrop-blur-md select-none font-['Outfit','Plus_Jakarta_Sans',sans-serif]">
+    <div
+      id="alna-puzzle-gate-modal"
+      className="fixed inset-0 z-[9800] flex items-center justify-center bg-[#1B2A4A]/45 backdrop-blur-md select-none font-['Outfit','Plus_Jakarta_Sans',sans-serif]"
+    >
       {/* Centered 75% Screen Size Container */}
       <div className="w-[75vw] max-w-[350px] max-h-[75dvh] mx-auto my-auto flex items-center justify-center">
         <NeoCard
@@ -348,9 +351,6 @@ export const LighthousePuzzleGate: React.FC<LighthousePuzzleGateProps> = ({
                   autoFocus
                   placeholder="Enter Answer"
                   value={userInput}
-                  onFocus={() => {
-                    if (onRequestLocation) onRequestLocation();
-                  }}
                   onChange={(e) => {
                     interactionCountRef.current += 1;
                     setError("");
