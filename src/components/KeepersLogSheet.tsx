@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { X, Clock, Eye, Radio, Sparkles, Key, Compass } from "lucide-react";
+import { X, Clock, Eye, Radio, Sparkles, Key, Compass, ShieldCheck } from "lucide-react";
 
 interface KeepersLogSheetProps {
   isOpen: boolean;
@@ -16,7 +16,9 @@ interface KeepersLogSheetProps {
   lastSeenRelative: string;
   lastSeenExact: string;
   visits: number | string;
-  visitorIp: string;
+  lastVisitorIp: string;
+  currentVisitorIp: string;
+  isOwnerIp?: boolean;
   onOpenAdmin: () => void;
   onTrackLogActivity?: (action: string, scrollPct?: number) => void;
 }
@@ -28,7 +30,9 @@ export const KeepersLogSheet: React.FC<KeepersLogSheetProps> = ({
   lastSeenRelative,
   lastSeenExact,
   visits,
-  visitorIp,
+  lastVisitorIp,
+  currentVisitorIp,
+  isOwnerIp = false,
   onOpenAdmin,
   onTrackLogActivity,
 }) => {
@@ -235,7 +239,7 @@ export const KeepersLogSheet: React.FC<KeepersLogSheetProps> = ({
                 <div>
                   <span className="font-extrabold text-sm text-[#1B2A4A] block">Last seen</span>
                   <span className="font-['Homemade_Apple',cursive] text-[11px] text-[#C9892B] block">
-                    last ship on the horizon
+                    when the previous visitor was here
                   </span>
                 </div>
               </div>
@@ -251,13 +255,30 @@ export const KeepersLogSheet: React.FC<KeepersLogSheetProps> = ({
 
             <div className="p-3.5 flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-[#E8F3F1] text-[#22418A] flex items-center justify-center shrink-0">
+                  <Radio className="w-4 h-4" />
+                </div>
+                <div>
+                  <span className="font-extrabold text-sm text-[#1B2A4A] block">Last Visit IP</span>
+                  <span className="font-['Homemade_Apple',cursive] text-[11px] text-[#C9892B] block">
+                    previous ship before this visit
+                  </span>
+                </div>
+              </div>
+              <span className="font-mono text-xs font-bold text-[#1B2A4A] px-2.5 py-1 rounded-lg bg-[#FAF7EE] border border-[#22418A]/10">
+                {lastVisitorIp}
+              </span>
+            </div>
+
+            <div className="p-3.5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-xl bg-[#FFF4D1] text-[#C9892B] flex items-center justify-center shrink-0">
                   <Eye className="w-4 h-4" />
                 </div>
                 <div>
                   <span className="font-extrabold text-sm text-[#1B2A4A] block">Total Visits</span>
                   <span className="font-['Homemade_Apple',cursive] text-[11px] text-[#C9892B] block">
-                    ships that passed by
+                    verified human ships that passed by
                   </span>
                 </div>
               </div>
@@ -266,20 +287,13 @@ export const KeepersLogSheet: React.FC<KeepersLogSheetProps> = ({
               </span>
             </div>
 
-            <div className="p-3.5 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-[#E8F3F1] text-[#22418A] flex items-center justify-center shrink-0">
-                  <Radio className="w-4 h-4" />
-                </div>
-                <div>
-                  <span className="font-extrabold text-sm text-[#1B2A4A] block">Visitor IP</span>
-                  <span className="font-['Homemade_Apple',cursive] text-[11px] text-[#C9892B] block">
-                    your light from the shore
-                  </span>
-                </div>
+            <div className="p-3 flex items-center justify-between gap-3 bg-[#FAF7EE]/60">
+              <div className="flex items-center gap-2 text-xs text-[#5A6788]">
+                <ShieldCheck className="w-3.5 h-3.5 text-[#22418A]" />
+                <span>Your Current Connection:</span>
               </div>
-              <span className="font-mono text-xs font-bold text-[#1B2A4A] px-2.5 py-1 rounded-lg bg-[#FAF7EE] border border-[#22418A]/10">
-                {visitorIp}
+              <span className="font-mono text-[11px] font-bold text-[#22418A]">
+                {currentVisitorIp} {isOwnerIp ? "• Keeper Recognized" : ""}
               </span>
             </div>
           </div>
@@ -312,7 +326,9 @@ export const KeepersLogSheet: React.FC<KeepersLogSheetProps> = ({
             <span>Open Keeper Terminal</span>
           </button>
           <span className="text-[11px] text-[#5A6788] font-medium">
-            Access requires authorization key
+            {isOwnerIp
+              ? "✓ Recognized Keeper IP (122.177.241.64 / 2401:4900:88f7:eec7::)"
+              : "Access restricted to registered Keeper IP & authorization key"}
           </span>
         </div>
       </section>

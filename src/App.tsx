@@ -3,6 +3,8 @@ import { initializeApp } from "firebase/app";
 import {
   getFirestore,
   doc,
+  getDoc,
+  getDocs,
   setDoc,
   increment,
   serverTimestamp,
@@ -10,6 +12,9 @@ import {
   addDoc,
   onSnapshot,
   arrayUnion,
+  query,
+  orderBy,
+  limit,
 } from "firebase/firestore";
 import { Volume2, VolumeX, Key } from "lucide-react";
 
@@ -21,8 +26,15 @@ import { BottomDock } from "./components/BottomDock";
 import { ChatWidget } from "./ChatWidget";
 import { paragraphs } from "./data/paragraphs";
 import { playGoldChime, toggleAmbientSoundscape } from "./utils/audio";
-import { useSecurityShield, VisitorNetworkProfile } from "./hooks/useSecurityShield";
+import {
+  useSecurityShield,
+  VisitorNetworkProfile,
+  SecurityAnomalyPayload,
+  detectBotOrCloudScanner,
+  isOwnerIpAddress,
+} from "./hooks/useSecurityShield";
 import { SecurityShieldOverlay } from "./components/SecurityShieldOverlay";
+import { LighthousePuzzleGate } from "./components/LighthousePuzzleGate";
 
 // Load local config if present, otherwise use public client config on Azure/cloud builds
 const localConfigs = (import.meta as any).glob("../firebase-applet-config.json", { eager: true });
@@ -87,13 +99,57 @@ function calculateDiff(now: Date) {
   };
 }
 
-function formatAgo(timestamp: number | null): string {
-  if (!timestamp) return "First contact";
-  const diffSec = Math.max(0, (Date.now() - timestamp) / 1000);
-  if (diffSec < 45) return "Just now";
-  if (diffSec < 3600) return `${Math.round(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.round(diffSec / 3600)}h ago`;
-  return `${Math.round(diffSec / 86400)}d ago`;
+function getOrdinalSuffix(day: number): string {
+  if (day > 3 && day < 21) return "th";
+  switch (day % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+
+function formatRelativeAgo(timestamp: number): string {
+  const diffSec = Math.max(1, Math.floor((Date.now() - timestamp) / 1000));
+  if (diffSec < 60) return `${diffSec} secs ago`;
+  const mins = Math.floor(diffSec / 60);
+  if (mins < 60) return `${mins} ${mins === 1 ? "min" : "mins"} ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} ${hrs === 1 ? "hr" : "hrs"} ago`;
+  const days = Math.floor(hrs / 24);
+  return `${days} ${days === 1 ? "day" : "days"} ago`;
+}
+
+// Formats exactly as requested: "12:30am - 26th November, 2026 (40 mins ago)"
+export function formatFullLastSeen(timestamp: number | null): string {
+  if (!timestamp) return "Resolving last visit...";
+  const date = new Date(timestamp);
+  const istParts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).formatToParts(date);
+
+  const getPart = (type: string) => istParts.find((p) => p.type === type)?.value || "";
+  const dayNum = parseInt(getPart("day"), 10) || date.getDate();
+  const monthName = getPart("month") || "November";
+  const yearStr = getPart("year") || String(date.getFullYear());
+  const hourStr = getPart("hour") || "12";
+  const minStr = getPart("minute") || "00";
+  const dayPeriod = (getPart("dayPeriod") || "am").toLowerCase().replace(/\s+/g, "");
+
+  const ordinalDay = `${dayNum}${getOrdinalSuffix(dayNum)}`;
+  const relativeStr = formatRelativeAgo(timestamp);
+
+  return `${hourStr}:${minStr}${dayPeriod} - ${ordinalDay} ${monthName}, ${yearStr} (${relativeStr})`;
 }
 
 function getNowIstTime(): string {
@@ -126,6 +182,14 @@ function getDeviceSummary(): string {
   return `${os} • ${browser} (${window.innerWidth}×${window.innerHeight})`;
 }
 
+function parseFirestoreTimestamp(val: any): number | null {
+  if (!val) return null;
+  if (typeof val.toMillis === "function") return val.toMillis();
+  if (typeof val.toDate === "function") return val.toDate().getTime();
+  const parsed = new Date(val).getTime();
+  return isNaN(parsed) ? null : parsed;
+}
+
 export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [showAdminAuth, setShowAdminAuth] = useState(false);
@@ -133,19 +197,35 @@ export default function App() {
   const [showLetters, setShowLetters] = useState(false);
   const [isAudioActive, setIsAudioActive] = useState(false);
 
+  // Mandatory Human Verification Gate on page load AND re-triggered on any mid-session anomaly
+  const [isPuzzleVerified, setIsPuzzleVerified] = useState<boolean>(false);
+  const [anomalyCause, setAnomalyCause] = useState<SecurityAnomalyPayload | null>(null);
+
   // Master Chronometer state (ticking every second)
   const [elapsed, setElapsed] = useState(() => calculateDiff(new Date()));
 
-  // Telemetry stats
+  // Telemetry stats:
+  // `lastSeenTimestamp` & `lastVisitorIp` are locked to the PREVIOUS human visit before this page load
   const [visits, setVisits] = useState<number | string>("…");
   const [lastSeenTimestamp, setLastSeenTimestamp] = useState<number | null>(null);
-  const [visitorIp, setVisitorIp] = useState<string>("…");
+  const [lastVisitorIp, setLastVisitorIp] = useState<string>("…");
+  const [currentVisitorIp, setCurrentVisitorIp] = useState<string>("…");
 
+  const pageOpenTimeRef = useRef<number>(Date.now());
+  const lockedPreviousVisitRef = useRef<boolean>(false);
   const activeLogRef = useRef<any>(null);
+  const activeSessionLogIdRef = useRef<string | null>(null);
   const pendingUpdatesRef = useRef<Array<Record<string, any>>>([]);
   const highestLettersScrollRef = useRef<number>(0);
   const highestDeepestLetterRef = useRef<number>(0);
   const highestLogScrollRef = useRef<number>(0);
+  const resolvedProfileRef = useRef<VisitorNetworkProfile | null>(null);
+  const hasCountedVisitRef = useRef<boolean>(false);
+  const isPuzzleVerifiedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    isPuzzleVerifiedRef.current = isPuzzleVerified;
+  }, [isPuzzleVerified]);
 
   // Helper that writes to visitor_logs immediately (or queues if logRef is still initializing)
   const pushVisitorTelemetry = useCallback((payload: Record<string, any>) => {
@@ -156,51 +236,162 @@ export default function App() {
     }
   }, []);
 
-  // 1. Silent Security & Capture Event Handler (VPN, Screenshot, Screen-Record, Copy, Right-Click, Tab Switch)
+  // 1. Silent Security & Anomaly Event Handler (VPN, Screenshot, Screen-Record, Copy, Right-Click, Rapid Click)
   const handleSilentSecurityEvent = useCallback(
-    (eventType: string, detail: string) => {
+    (eventType: string, detail: string, anomaly?: SecurityAnomalyPayload) => {
       const timeStr = getNowIstTime();
       const entry = `[${timeStr}] ${eventType}: ${detail}`;
-      pushVisitorTelemetry({
+
+      const updatePayload: Record<string, any> = {
         securityAlert: `${eventType}: ${detail}`,
         securityEvents: increment(1),
         securityLogs: arrayUnion(entry),
         activityTimeline: arrayUnion(`[${timeStr}] ⚠ ${detail}`),
         lastSecurityAt: serverTimestamp(),
-      });
+      };
+
+      if (anomaly) {
+        updatePayload.lastErrorCode = anomaly.code;
+        updatePayload.lastAnomalyCause = anomaly.simpleCause;
+        setAnomalyCause(anomaly);
+      }
+
+      pushVisitorTelemetry(updatePayload);
     },
     [pushVisitorTelemetry]
   );
 
-  // 2. Silent Network & VPN Profile Handler
+  // 2. Silent Network & Exact Device Location Profile Handler
   const handleNetworkProfileResolved = useCallback(
     (profile: VisitorNetworkProfile) => {
+      resolvedProfileRef.current = profile;
       if (profile.ip && profile.ip !== "Unknown") {
-        setVisitorIp(profile.ip);
+        setCurrentVisitorIp(profile.ip);
       }
-      const locationStr = [profile.city, profile.region, profile.country].filter(Boolean).join(", ");
+
+      const locationStr = [profile.city, profile.region, profile.country]
+        .filter(Boolean)
+        .join(", ");
       const timeStr = getNowIstTime();
-      pushVisitorTelemetry({
+
+      const telemetryUpdate: Record<string, any> = {
         ip: profile.ip,
+        ipv4: profile.ipv4 || "",
+        ipv6: profile.ipv6 || "",
         isp: profile.isp,
+        city: profile.city || "",
+        region: profile.region || "",
+        country: profile.country || "",
+        postalCode: profile.postalCode || "",
         location: locationStr || profile.country || "Unknown",
         timezone: profile.timezone,
         isVpn: profile.isVpn,
         vpnReason: profile.vpnReason,
-        activityTimeline: arrayUnion(
-          `[${timeStr}] Network resolved: ${profile.ip} (${locationStr || "Direct"} • ${profile.isp}${
-            profile.isVpn ? " • VPN/PROXY DETECTED" : ""
-          })`
-        ),
-      });
+        isBot: profile.isBot,
+        botReason: profile.botReason,
+        isOwner: profile.isOwner,
+      };
+
+      if (typeof profile.latitude === "number" && typeof profile.longitude === "number") {
+        telemetryUpdate.latitude = profile.latitude;
+        telemetryUpdate.longitude = profile.longitude;
+        telemetryUpdate.accuracyMeters = profile.accuracyMeters || 850;
+        telemetryUpdate.geoSource = profile.geoSource || "IP_NETWORK";
+        telemetryUpdate.exactAddress =
+          profile.exactAddress || locationStr || `${profile.latitude}, ${profile.longitude}`;
+      }
+
+      const geoBadge =
+        profile.geoSource === "EXACT_DEVICE_GPS"
+          ? `GPS Exact (${profile.latitude}, ${profile.longitude} ±${profile.accuracyMeters || 10}m)`
+          : typeof profile.latitude === "number"
+          ? `Geo (${profile.latitude}, ${profile.longitude})`
+          : "Direct";
+
+      telemetryUpdate.activityTimeline = arrayUnion(
+        `[${timeStr}] Network & Geo resolved: ${profile.ip} (${locationStr || "Direct"} • ${geoBadge} • ${
+          profile.isp
+        }${
+          profile.isBot
+            ? " • BOT/SCANNER BLOCKED"
+            : profile.isVpn
+            ? " • VPN/PROXY DETECTED"
+            : profile.isOwner
+            ? " • OWNER WHITELISTED"
+            : ""
+        })`
+      );
+
+      pushVisitorTelemetry(telemetryUpdate);
     },
     [pushVisitorTelemetry]
   );
 
-  // Activate active screenshot/VPN/copy blocking + 100% silent background telemetry
+  // Activate active screenshot/screen-record/VPN/bot blocking + exact GPS location + silent background telemetry
   const security = useSecurityShield(handleSilentSecurityEvent, handleNetworkProfileResolved);
 
-  // 3. Silent Activity Tracker for Letters Archive (Reading, Scrolling, Mode Switch, Bookmarks)
+  // Called when visitor solves the embedded Mathematics CAPTCHA directly inside any Error Block Module
+  const handleDismissSecurityCurtain = useCallback(() => {
+    const solvedCode = security.activeAnomaly?.code || security.activeErrorCode || "ERR_SECURITY";
+    security.dismissBlur();
+    security.clearAnomaly();
+    setAnomalyCause(null);
+    setIsPuzzleVerified(true);
+
+    const timeStr = getNowIstTime();
+    pushVisitorTelemetry({
+      puzzleVerified: true,
+      activityTimeline: arrayUnion(
+        `[${timeStr}] ✓ Solved Embedded Math Verification inside Error Module (${solvedCode}) — Access Restored`
+      ),
+    });
+  }, [security, pushVisitorTelemetry]);
+
+  // Handle Human Verification CAPTCHA Completion (both initial & post-anomaly re-verification)
+  const handlePuzzleVerified = useCallback(
+    (solveTelemetry: { attempts: number; solveDurationMs: number; trajectoryPoints: number }) => {
+      const wasAnomalyReverify = Boolean(anomalyCause);
+      const causeText = anomalyCause
+        ? `${anomalyCause.code} (${anomalyCause.simpleCause})`
+        : "";
+
+      setIsPuzzleVerified(true);
+      setAnomalyCause(null);
+      security.clearAnomaly();
+      security.requestExactDeviceLocation();
+
+      const timeStr = getNowIstTime();
+      pushVisitorTelemetry({
+        puzzleVerified: true,
+        puzzleSolveMs: solveTelemetry.solveDurationMs,
+        openedSections: arrayUnion(
+          wasAnomalyReverify ? `Re-Verified After ${anomalyCause?.code}` : "Solved Human Verification",
+          "Home Seascape"
+        ),
+        activityTimeline: arrayUnion(
+          wasAnomalyReverify
+            ? `[${timeStr}] ✓ Re-Verified Human Access after ${causeText} (${solveTelemetry.solveDurationMs}ms)`
+            : `[${timeStr}] ✓ Passed Human Verification Gate (${solveTelemetry.solveDurationMs}ms, ${solveTelemetry.attempts} attempt)`
+        ),
+      });
+    },
+    [anomalyCause, pushVisitorTelemetry, security]
+  );
+
+  const handlePuzzleBotFlagged = useCallback(
+    (reason: string) => {
+      handleSilentSecurityEvent("PUZZLE_BOT_TRAJECTORY_FAILED", reason, {
+        code: "ERR_MATH_400",
+        title: "CAPTCHA FAILED",
+        simpleCause: reason,
+        eventType: "PUZZLE_BOT_TRAJECTORY_FAILED",
+        timestamp: Date.now(),
+      });
+    },
+    [handleSilentSecurityEvent]
+  );
+
+  // 3. Silent Activity Tracker for Letters Archive
   const handleTrackLettersActivity = useCallback(
     (payload: LettersActivityPayload) => {
       const timeStr = getNowIstTime();
@@ -287,79 +478,106 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  // Real-time Firebase Firestore visits & IP tracking
+  // Real-time Firebase Firestore visits, PREVIOUS visitor IP/Last-Seen lookup & Session Logger
   useEffect(() => {
     let durInterval: NodeJS.Timeout | null = null;
     let fetchedIp = "—";
 
-    const fetchIpAndTrack = async () => {
-      // 1. Fetch visitor IP
+    const initTelemetry = async () => {
+      // 1. Fast IP fetch
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3000);
-        const res = await fetch("https://api.ipify.org?format=json", { signal: controller.signal });
+        const timeout = setTimeout(() => controller.abort(), 1500);
+        const res = await fetch("https://api4.ipify.org?format=json", { signal: controller.signal });
         clearTimeout(timeout);
         const json = await res.json();
         if (json.ip) {
           fetchedIp = json.ip;
-          setVisitorIp(json.ip);
+          setCurrentVisitorIp(json.ip);
         }
-      } catch (e) {
+      } catch (_) {
         try {
-          const r = await fetch("https://ipinfo.io/json");
-          const j = await r.json();
-          if (j.ip) {
-            fetchedIp = j.ip;
-            setVisitorIp(j.ip);
+          const controller2 = new AbortController();
+          const timeout2 = setTimeout(() => controller2.abort(), 1500);
+          const res2 = await fetch("https://api64.ipify.org?format=json", { signal: controller2.signal });
+          clearTimeout(timeout2);
+          const json2 = await res2.json();
+          if (json2.ip) {
+            fetchedIp = json2.ip;
+            setCurrentVisitorIp(json2.ip);
           }
-        } catch (err) {
-          setVisitorIp("Active");
+        } catch (__) {
+          setCurrentVisitorIp("Active");
         }
       }
 
-      // 2. Real-time Firebase Firestore Sync
       if (!db) {
         setVisits(1551);
-        setLastSeenTimestamp(Date.now() - 14 * 60 * 1000);
+        setLastSeenTimestamp(Date.now() - 40 * 60 * 1000);
+        setLastVisitorIp("122.177.241.64");
         return;
       }
+
       try {
         const statsRef = doc(db, "site", "global");
 
-        const unsub = onSnapshot(statsRef, (snap) => {
-          if (snap.exists()) {
-            const data = snap.data();
-            if (data.visits != null) {
-              setVisits(data.visits);
+        // 2. Query `visitor_logs` FIRST to lock the true PREVIOUS human visit
+        try {
+          const prevQuery = query(
+            collection(db, "visitor_logs"),
+            orderBy("timestamp", "desc"),
+            limit(40)
+          );
+          const prevSnap = await getDocs(prevQuery);
+          for (const docSnap of prevSnap.docs) {
+            const d = docSnap.data();
+            const ts = parseFirestoreTimestamp(d.timestamp);
+            if (ts && pageOpenTimeRef.current - ts < 5000) {
+              continue;
             }
-            if (data.lastVisit) {
-              const ts =
-                typeof data.lastVisit.toMillis === "function"
-                  ? data.lastVisit.toMillis()
-                  : typeof data.lastVisit.toDate === "function"
-                  ? data.lastVisit.toDate().getTime()
-                  : new Date(data.lastVisit).getTime();
+            const botEval = detectBotOrCloudScanner({
+              ip: d.ip,
+              isp: d.isp,
+              org: d.isp,
+              city: d.location,
+              region: d.location,
+              userAgent: d.userAgent,
+            });
+            if (d.isBot || botEval.isBot) {
+              continue;
+            }
+            if (d.ip && d.ip !== "—" && d.ip !== "Unknown" && ts) {
               setLastSeenTimestamp(ts);
+              setLastVisitorIp(d.ip);
+              lockedPreviousVisitRef.current = true;
+              break;
             }
           }
-        });
+        } catch (_) {}
 
-        // Atomic visit increment guard (once per session)
-        const alreadyCounted = sessionStorage.getItem("counted_alna_van_gogh") === "1";
-        if (!alreadyCounted) {
-          sessionStorage.setItem("counted_alna_van_gogh", "1");
-          await setDoc(
-            statsRef,
-            {
-              visits: increment(1),
-              lastVisit: serverTimestamp(),
-              lastIp: fetchedIp,
-            },
-            { merge: true }
-          );
+        if (!lockedPreviousVisitRef.current) {
+          try {
+            const initialSnap = await getDoc(statsRef);
+            if (initialSnap.exists()) {
+              const initData = initialSnap.data();
+              if (initData.visits != null) {
+                setVisits(initData.visits);
+              }
+              const prevTs = parseFirestoreTimestamp(initData.previousVisit || initData.lastVisit);
+              const prevIp = initData.previousIp || initData.lastIp;
+              if (prevTs) {
+                setLastSeenTimestamp(prevTs);
+                lockedPreviousVisitRef.current = true;
+              }
+              if (prevIp && !detectBotOrCloudScanner({ ip: prevIp }).isBot) {
+                setLastVisitorIp(prevIp);
+              }
+            }
+          } catch (_) {}
         }
 
-        // 3. Create visitor intelligence session log for EVERY visitor
+        // 3. Create visitor session log in `visitor_logs` for the current visitor
+        const immediateBot = detectBotOrCloudScanner({ ip: fetchedIp });
         try {
           const entryTime = getNowIstTime();
           const logRef = await addDoc(collection(db, "visitor_logs"), {
@@ -368,18 +586,22 @@ export default function App() {
             userAgent: navigator.userAgent,
             deviceSummary: getDeviceSummary(),
             durationSeconds: 0,
-            openedSections: ["Home Seascape"],
+            isBot: immediateBot.isBot,
+            botReason: immediateBot.reason,
+            isOwner: isOwnerIpAddress(fetchedIp),
+            puzzleVerified: false,
+            openedSections: ["Human Verification Gate"],
             lettersRead: [],
             likedLetters: [],
             maxScrollPercent: 0,
             logSheetScrollPercent: 0,
             securityEvents: 0,
             securityLogs: [],
-            activityTimeline: [`[${entryTime}] Entered Home Seascape (${getDeviceSummary()})`],
+            activityTimeline: [`[${entryTime}] Opened Human Verification Gate (${getDeviceSummary()})`],
           });
           activeLogRef.current = logRef;
+          activeSessionLogIdRef.current = logRef.id;
 
-          // Flush any early network/security/activity updates queued before logRef was ready
           if (pendingUpdatesRef.current.length > 0) {
             const queued = [...pendingUpdatesRef.current];
             pendingUpdatesRef.current = [];
@@ -395,15 +617,27 @@ export default function App() {
           console.warn("Visitor log writing warning:", err);
         }
 
-        return unsub;
+        // 4. Subscribe to `site/global` for live total visits count
+        const unsubStats = onSnapshot(statsRef, (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data.visits != null) {
+              setVisits(data.visits);
+            }
+          }
+        });
+
+        return () => {
+          unsubStats();
+        };
       } catch (err) {
         console.error("Firebase Firestore sync fallback:", err);
         setVisits(1544);
-        setLastSeenTimestamp(Date.now());
+        setLastSeenTimestamp(Date.now() - 40 * 60 * 1000);
       }
     };
 
-    const cleanupPromise = fetchIpAndTrack();
+    const cleanupPromise = initTelemetry();
 
     return () => {
       if (durInterval) clearInterval(durInterval);
@@ -412,6 +646,47 @@ export default function App() {
       });
     };
   }, []);
+
+  // Increment global human `Visits` ONLY after the visitor solves the Human Verification CAPTCHA and is NOT a bot!
+  useEffect(() => {
+    if (!db || !isPuzzleVerified || security.isBotDetected || hasCountedVisitRef.current) {
+      return;
+    }
+
+    const alreadyCounted = sessionStorage.getItem("counted_alna_van_gogh") === "1";
+    if (alreadyCounted) {
+      hasCountedVisitRef.current = true;
+      return;
+    }
+
+    hasCountedVisitRef.current = true;
+    sessionStorage.setItem("counted_alna_van_gogh", "1");
+
+    const recordVerifiedHumanVisit = async () => {
+      try {
+        const statsRef = doc(db, "site", "global");
+        const snap = await getDoc(statsRef);
+        const existingData = snap.exists() ? snap.data() : {};
+        const ipToRecord =
+          resolvedProfileRef.current?.ip ||
+          (currentVisitorIp !== "…" ? currentVisitorIp : "Verified Visitor");
+
+        await setDoc(
+          statsRef,
+          {
+            visits: increment(1),
+            previousVisit: existingData?.lastVisit || serverTimestamp(),
+            previousIp: existingData?.lastIp || ipToRecord,
+            lastVisit: serverTimestamp(),
+            lastIp: ipToRecord,
+          },
+          { merge: true }
+        );
+      } catch (_) {}
+    };
+
+    recordVerifiedHumanVisit();
+  }, [isPuzzleVerified, security.isBotDetected, currentVisitorIp]);
 
   const toggleAudio = () => {
     const newState = toggleAmbientSoundscape();
@@ -440,33 +715,76 @@ export default function App() {
   const handleFailedKeeperAttempt = (attemptedKey: string) => {
     handleSilentSecurityEvent(
       "KEEPER_KEY_FAILED",
-      `Tried wrong Keeper key: "${attemptedKey.slice(0, 30)}"`
+      `Tried wrong Keeper key: "${attemptedKey.slice(0, 30)}"`,
+      {
+        code: "ERR_AUTH_401",
+        title: "KEEPER AUTH FAILED",
+        simpleCause: "Invalid Keeper authorization key entered.",
+        eventType: "KEEPER_KEY_FAILED",
+        timestamp: Date.now(),
+      }
     );
   };
 
-  const lastSeenRelative = formatAgo(lastSeenTimestamp);
-  const lastSeenExact = lastSeenTimestamp
-    ? new Date(lastSeenTimestamp).toLocaleString("en-IN", {
-        day: "numeric",
-        month: "short",
-        year: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-        timeZoneName: "short",
-      })
-    : "";
+  // Exact formatted Last Seen string: "12:30am - 26th November, 2026 (40 mins ago)"
+  const fullLastSeenFormatted = formatFullLastSeen(lastSeenTimestamp);
 
   // Keeper Admin Dashboard View
   if (isAdmin) {
     return <AdminDashboard onBack={() => setIsAdmin(false)} db={db} />;
   }
 
+  // 1. MANDATORY GATE & MID-SESSION ANOMALY RE-VERIFICATION: Centered 75% NeoPOP Human Verification Modal
+  if (
+    (!isPuzzleVerified || security.isBotDetected) &&
+    !security.isVpnDetected &&
+    !security.isBlurred &&
+    !security.isCaptureProtected &&
+    !security.captureWarning
+  ) {
+    return (
+      <div className="relative w-full h-full min-h-screen bg-[#EEF5F3] text-[#1B2A4A] overflow-hidden select-none">
+        <div className="pointer-events-none select-none opacity-85">
+          <VanGoghScene onOpenLetters={() => {}} />
+        </div>
+        <SecurityShieldOverlay
+          isVpnDetected={security.isVpnDetected}
+          vpnReason={security.vpnReason}
+          vpnDetails={security.vpnDetails}
+          isCheckingVpn={security.isCheckingVpn}
+          isCaptureProtected={security.isCaptureProtected}
+          captureWarning={security.captureWarning}
+          activeErrorCode={security.activeErrorCode}
+          isBlurred={security.isBlurred}
+          lockoutSeconds={security.lockoutSeconds}
+          onRecheckVpn={security.recheckVpn}
+          onBypassVpn={security.bypassVpnForSession}
+          onDismissBlur={handleDismissSecurityCurtain}
+        />
+        <LighthousePuzzleGate
+          onVerified={handlePuzzleVerified}
+          onBotFlagged={handlePuzzleBotFlagged}
+          onRequestLocation={security.requestExactDeviceLocation}
+          isBotDetected={security.isBotDetected}
+          botReason={security.botReason}
+          isOwnerIp={security.isOwnerIp}
+          visitorIp={currentVisitorIp}
+          anomalyCause={anomalyCause}
+        />
+      </div>
+    );
+  }
+
   const isScreenProtected =
-    security.isVpnDetected || security.isBlurred || security.isCaptureProtected;
+    security.isVpnDetected ||
+    security.isBlurred ||
+    security.isCaptureProtected ||
+    Boolean(security.captureWarning) ||
+    security.isBotDetected;
 
   return (
     <div className="relative w-full h-full min-h-screen bg-[#EEF5F3] text-[#1B2A4A] overflow-hidden select-none">
-      {/* 0. Active Anti-Screenshot, Anti-Recording, Focus Curtain & VPN Block Overlay (Light Theme) */}
+      {/* Active Anti-Screenshot, Anti-Screen-Recording, 5s Lockout Curtain & VPN Block Overlay (Centered 75% NeoPOP) */}
       <SecurityShieldOverlay
         isVpnDetected={security.isVpnDetected}
         vpnReason={security.vpnReason}
@@ -474,13 +792,16 @@ export default function App() {
         isCheckingVpn={security.isCheckingVpn}
         isCaptureProtected={security.isCaptureProtected}
         captureWarning={security.captureWarning}
+        activeErrorCode={security.activeErrorCode}
         isBlurred={security.isBlurred}
+        lockoutSeconds={security.lockoutSeconds}
         onRecheckVpn={security.recheckVpn}
         onBypassVpn={security.bypassVpnForSession}
-        onDismissBlur={security.dismissBlur}
+        onDismissBlur={handleDismissSecurityCurtain}
       />
 
       <div
+        id="alna-protected-stage"
         className={
           isScreenProtected
             ? "invisible pointer-events-none select-none opacity-0"
@@ -523,7 +844,9 @@ export default function App() {
               <button
                 onClick={toggleAudio}
                 className={`p-1.5 rounded-md border border-[#22418A]/30 transition-all cursor-pointer ${
-                  isAudioActive ? "bg-[#FFF6D6] text-[#C9892B]" : "bg-[#FAF7EE] text-[#5A6788] hover:bg-[#FFFFFF]"
+                  isAudioActive
+                    ? "bg-[#FFF6D6] text-[#C9892B]"
+                    : "bg-[#FAF7EE] text-[#5A6788] hover:bg-[#FFFFFF]"
                 }`}
                 aria-label={isAudioActive ? "Mute Ocean Frequency" : "Play Ocean Frequency"}
                 title={isAudioActive ? "Mute 432Hz Sound" : "Listen to 432Hz Sound"}
@@ -570,38 +893,67 @@ export default function App() {
                 </span>
               </div>
 
-              <div className="p-stats">
-                <div className="stat">
-                  <span className="lbl">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                      <circle cx="12" cy="12" r="9" />
-                      <path d="M12 7v5l3 2" />
-                    </svg>
-                    Last seen
-                  </span>
-                  <span className="val">{lastSeenRelative}</span>
-                </div>
+              {/* Full-Width Exact Last Seen Row: e.g. "12:30am - 26th November, 2026 (40 mins ago)" */}
+              <div className="mt-2 pt-2 border-t border-[#22418A]/12 flex flex-col gap-0.5 text-left">
+                <span className="flex items-center gap-1 text-[10px] font-extrabold text-[#5A6788]">
+                  <svg
+                    className="w-3 h-3 text-[#3E86A8] shrink-0"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                  >
+                    <circle cx="12" cy="12" r="9" />
+                    <path d="M12 7v5l3 2" />
+                  </svg>
+                  <span>Last seen</span>
+                </span>
+                <span className="text-[11.5px] sm:text-xs font-black text-[#1B2A4A] leading-snug tabular-nums">
+                  {fullLastSeenFormatted}
+                </span>
+              </div>
 
-                <div className="stat">
-                  <span className="lbl">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              {/* Bottom 2-Column Row: Visits & Last Visit IP */}
+              <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-[#22418A]/12">
+                <div className="min-w-0">
+                  <span className="flex items-center gap-1 text-[10px] font-extrabold text-[#5A6788]">
+                    <svg
+                      className="w-3 h-3 text-[#3E86A8] shrink-0"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                    >
                       <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" />
                       <circle cx="12" cy="12" r="3" />
                     </svg>
-                    Visits
+                    <span>Visits</span>
                   </span>
-                  <span className="val">{typeof visits === "number" ? visits.toLocaleString("en-IN") : visits}</span>
+                  <span className="block text-xs sm:text-[13px] font-black text-[#1B2A4A] mt-0.5 tabular-nums">
+                    {typeof visits === "number" ? visits.toLocaleString("en-IN") : visits}
+                  </span>
                 </div>
 
-                <div className="stat">
-                  <span className="lbl">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                <div className="min-w-0 pl-2 border-l border-[#22418A]/12">
+                  <span className="flex items-center gap-1 text-[10px] font-extrabold text-[#5A6788]">
+                    <svg
+                      className="w-3 h-3 text-[#3E86A8] shrink-0"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                    >
                       <path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21Z" />
                       <circle cx="12" cy="9.5" r="2.5" />
                     </svg>
-                    Visitor IP
+                    <span>Last Visit IP</span>
                   </span>
-                  <span className="val">{visitorIp}</span>
+                  <span className="block text-xs sm:text-[13px] font-black text-[#1B2A4A] mt-0.5 truncate tabular-nums">
+                    {lastVisitorIp}
+                  </span>
                 </div>
               </div>
             </button>
@@ -619,10 +971,12 @@ export default function App() {
           isOpen={showLogSheet}
           onClose={() => setShowLogSheet(false)}
           elapsed={elapsed}
-          lastSeenRelative={lastSeenRelative}
-          lastSeenExact={lastSeenExact}
+          lastSeenRelative={fullLastSeenFormatted}
+          lastSeenExact=""
           visits={visits}
-          visitorIp={visitorIp}
+          lastVisitorIp={lastVisitorIp}
+          currentVisitorIp={currentVisitorIp}
+          isOwnerIp={security.isOwnerIp}
           onOpenAdmin={() => {
             setShowLogSheet(false);
             handleOpenAdminPrompt();
@@ -630,20 +984,34 @@ export default function App() {
           onTrackLogActivity={handleTrackLogSheetActivity}
         />
 
-        {/* 5. Unsent Letters Modal (101 Paragraphs & Telugu Quote) */}
+        {/* 5. Unsent Letters Modal (101 Paragraphs & Telugu Quote + Mobile Touch-to-Read Shield) */}
         <UnsentLettersModal
           isOpen={showLetters}
           onClose={() => setShowLetters(false)}
           paragraphs={paragraphs}
           totalDays={elapsed.total}
+          isOwnerIp={security.isOwnerIp}
           onTrackActivity={handleTrackLettersActivity}
+          onSecurityCaptureBlocked={(detail) =>
+            handleSilentSecurityEvent("LETTERS_MOBILE_SCREENSHOT_BLOCKED", detail, {
+              code: "ERR_CAPTURE_401",
+              title: "MOBILE SCREENSHOT BLOCKED",
+              simpleCause: detail,
+              eventType: "LETTERS_MOBILE_SCREENSHOT_BLOCKED",
+              timestamp: Date.now(),
+            })
+          }
         />
 
-        {/* 6. Keeper Authentication Modal (Key: 1811! / <1811!>) */}
+        {/* 6. Keeper Authentication Modal (Key: 1811! / <1811!> + Owner IPv4/IPv6 Wi-Fi Extender Whitelist) */}
         {showAdminAuth && (
           <AdminAuthModal
             onClose={() => setShowAdminAuth(false)}
             onFailedAttempt={handleFailedKeeperAttempt}
+            visitorIp={currentVisitorIp}
+            ipv4={security.vpnDetails?.ipv4}
+            ipv6={security.vpnDetails?.ipv6}
+            isOwnerIp={security.isOwnerIp}
             onSuccess={() => {
               setShowAdminAuth(false);
               setIsAdmin(true);

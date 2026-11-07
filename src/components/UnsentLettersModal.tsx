@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useRef } from "react";
-import { motion, AnimatePresence } from "motion/react";
+import { motion } from "motion/react";
 import {
   BookOpen,
   X,
   Heart,
-  Clock,
   Play,
   Pause,
   ChevronLeft,
@@ -12,14 +11,9 @@ import {
   RotateCcw,
   Volume2,
   VolumeX,
-  Sparkles,
-  Type,
-  Maximize2,
-  Minimize2,
+  EyeOff,
+  Fingerprint,
 } from "lucide-react";
-import { Typography } from "./neopop/Typography";
-import { FontVariant } from "./neopop/primitives";
-import { NeoButton } from "./neopop/NeoButton";
 import { playTypewriterClick } from "../utils/audio";
 
 export interface LettersActivityPayload {
@@ -36,7 +30,9 @@ interface UnsentLettersModalProps {
   onClose: () => void;
   paragraphs: string[];
   totalDays: number;
+  isOwnerIp?: boolean;
   onTrackActivity?: (payload: LettersActivityPayload) => void;
+  onSecurityCaptureBlocked?: (detail: string) => void;
 }
 
 type FontTheme = "lora" | "playfair" | "sans" | "typewriter";
@@ -46,7 +42,9 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
   onClose,
   paragraphs,
   totalDays,
+  isOwnerIp = false,
   onTrackActivity,
+  onSecurityCaptureBlocked,
 }) => {
   const [viewMode, setViewMode] = useState<"typewriter" | "all">("typewriter");
   const [fontTheme, setFontTheme] = useState<FontTheme>("lora");
@@ -58,12 +56,59 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [likedMap, setLikedMap] = useState<Record<number, boolean>>({});
 
+  // Mobile Touch-Hold Shield for Android & iPhone (prevents hardware Power+Volume screenshots)
+  const [isMobileDevice, setIsMobileDevice] = useState<boolean>(false);
+  const [isTouchHolding, setIsTouchHolding] = useState<boolean>(false);
+
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const highestScrollLoggedRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const ua = navigator.userAgent || "";
+      const mobile =
+        /iPhone|iPad|iPod|Android/i.test(ua) ||
+        (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
+      setIsMobileDevice(mobile);
+    }
+  }, []);
 
   const currentParagraph = paragraphs[currentIndex] || "";
   const words = currentParagraph.trim().split(/\s+/).filter(Boolean);
   const isComplete = revealedWordCount >= words.length;
+
+  // On Android/iPhone, non-owner visitors must keep 1 finger touching the glass to unveil text
+  // (lifting finger to press Power+Volume or using 2/3 fingers immediately veils the letter in 0ms!)
+  const isMobileVeiled = isMobileDevice && !isOwnerIp && !isTouchHolding;
+
+  const handleMobileTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 1) {
+      setIsTouchHolding(true);
+    } else if (e.touches.length >= 2) {
+      setIsTouchHolding(false);
+      if (onSecurityCaptureBlocked) {
+        onSecurityCaptureBlocked(
+          `Blocked ${e.touches.length}-finger screenshot gesture inside Unsent Letters (#${currentIndex + 1})`
+        );
+      }
+    }
+  };
+
+  const handleMobileTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length === 0) {
+      setIsTouchHolding(false);
+    }
+  };
+
+  const handleMobileTouchCancel = () => {
+    // Fires immediately on iOS/Android when Power+Volume or 3-finger screenshot interrupts touch!
+    setIsTouchHolding(false);
+    if (onSecurityCaptureBlocked) {
+      onSecurityCaptureBlocked(
+        `Intercepted mobile system screenshot / touchcancel inside Letter #${currentIndex + 1}`
+      );
+    }
+  };
 
   // Font family selector
   const getFontFamilyClass = () => {
@@ -114,7 +159,6 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
   useEffect(() => {
     setRevealedWordCount(0);
     setIsPlaying(true);
-    // Smooth scroll back to top of the letter on mobile
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
     }
@@ -211,7 +255,7 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5 bg-[#0A0D14]/30 backdrop-blur-[3px] overflow-hidden"
+      className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-5 bg-[#0A0D14]/30 backdrop-blur-[3px] overflow-hidden select-none"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -220,8 +264,11 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
         initial={{ opacity: 0, y: 16, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 16, scale: 0.96 }}
-        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
-        className="relative w-[84vw] sm:w-[80vw] max-w-2xl h-[80dvh] max-h-[80dvh] bg-[#FCF9F0]/95 backdrop-blur-2xl text-[#1B2A4A] rounded-[24px] border border-white/85 shadow-[0_24px_60px_-14px_rgba(27,42,74,0.38)] flex flex-col overflow-hidden font-['Outfit','Plus_Jakarta_Sans',sans-serif]"
+        transition={{ duration: 0.2, ease: [0.16, 1, 0.3, 1] }}
+        onTouchStart={handleMobileTouchStart}
+        onTouchEnd={handleMobileTouchEnd}
+        onTouchCancel={handleMobileTouchCancel}
+        className="relative w-[88vw] sm:w-[80vw] max-w-2xl h-[82dvh] max-h-[82dvh] bg-[#FCF9F0]/95 backdrop-blur-2xl text-[#1B2A4A] rounded-[24px] border border-white/85 shadow-[0_24px_60px_-14px_rgba(27,42,74,0.38)] flex flex-col overflow-hidden font-['Outfit','Plus_Jakarta_Sans',sans-serif] select-none"
       >
         {/* French Airmail Border Ribbon */}
         <div
@@ -341,6 +388,20 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
             </button>
           </div>
         </div>
+
+        {/* Mobile Touch-Hold Anti-Screenshot Instruction Strip (Android & iPhone) */}
+        {isMobileDevice && !isOwnerIp && (
+          <div className="px-3 py-1.5 bg-[#FFF6D6] border-b border-[#C9892B]/40 flex items-center justify-between text-[11px] font-bold text-[#1B2A4A] shrink-0">
+            <span className="flex items-center gap-1.5">
+              <Fingerprint className="w-3.5 h-3.5 text-[#B8304A] shrink-0" />
+              <span>
+                {isTouchHolding
+                  ? "Touch Shield Active — Keep 1 finger on screen to read"
+                  : "Touch & hold with 1 finger to unveil letter (Anti-Screenshot Shield)"}
+              </span>
+            </span>
+          </div>
+        )}
 
         {/* ================= VIEW 1: TYPEWRITER WORD-BY-WORD REVEAL ================= */}
         {viewMode === "typewriter" && (
@@ -486,17 +547,22 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
                   </div>
                 </div>
 
-                {/* Main Beautiful Letter Text with Warm Literary Typography */}
-                <div className="my-5 sm:my-8 text-left">
+                {/* Main Beautiful Letter Text with Instant Mobile Touch-Guard Veil */}
+                <div className="relative my-5 sm:my-8 text-left">
                   <p
+                    style={{
+                      filter: isMobileVeiled ? "blur(14px)" : "none",
+                      opacity: isMobileVeiled ? 0.15 : 1,
+                    }}
                     className={`${getFontFamilyClass()} ${getFontSizeClass()} font-semibold text-[#14233D] tracking-normal select-none`}
                   >
                     {words.slice(0, revealedWordCount).map((word, wIdx) => {
-                      const isHeaderLine = word === "MY" || word === "FINAL" || word === "NOTE…" || word === "Sanjana,";
+                      const isHeaderLine =
+                        word === "MY" || word === "FINAL" || word === "NOTE…" || word === "Sanjana,";
                       return (
                         <span
                           key={wIdx}
-                          className={`inline-block mr-1.5 animate-in fade-in duration-100 ${
+                          className={`inline-block mr-1.5 ${
                             isHeaderLine ? "text-[#B8304A] font-bold" : "text-[#14233D]"
                           }`}
                         >
@@ -510,6 +576,18 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
                       <span className="inline-block w-2.5 h-5 bg-[#B8304A] ml-1 animate-pulse align-middle" />
                     )}
                   </p>
+
+                  {isMobileVeiled && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center bg-[#FAF7EE]/90 border-2 border-[#C9892B] rounded-xl">
+                      <EyeOff className="w-6 h-6 text-[#B8304A] mb-1.5" />
+                      <span className="text-xs font-extrabold text-[#1B2A4A]">
+                        Keep 1 Finger Touching the Screen to Read
+                      </span>
+                      <span className="text-[11px] text-[#5A6788] mt-0.5 max-w-xs">
+                        Lifting your finger to press hardware screenshot buttons automatically hides the letter.
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Personal Space Disclaimer Note (Light Theme) */}
@@ -578,14 +656,16 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
             {/* Telugu Quote Highlight */}
             <div className="p-4 sm:p-5 bg-[#FCFAF2] rounded-xl border border-[#C9892B]/30 shadow-sm space-y-1.5">
               <p className={`${getFontFamilyClass()} text-base sm:text-lg font-bold text-[#14233D] leading-relaxed`}>
-                “Nuvvu ennisarlu nannu pagalkottina... ennisarlu na gunde ni mukkalu chesina... I can't stop loving you like this.”
+                “Nuvvu ennisarlu nannu pagalkottina... ennisarlu na gunde ni mukkalu chesina... I can't stop loving you
+                like this.”
               </p>
               <p className="text-xs text-[#5A6788] italic">
-                Even if silence stands between us, my heart will forever keep the light burning on the horizon. Every broken seam is sealed with gold.
+                Even if silence stands between us, my heart will forever keep the light burning on the horizon. Every
+                broken seam is sealed with gold.
               </p>
             </div>
 
-            {/* All Letters Cards with Warm Literary Typography */}
+            {/* All Letters Cards with Mobile Touch-Hold Veil */}
             <div className="space-y-4">
               {paragraphs.map((text, idx) => (
                 <div
@@ -610,6 +690,10 @@ export const UnsentLettersModal: React.FC<UnsentLettersModalProps> = ({
                     </button>
                   </div>
                   <p
+                    style={{
+                      filter: isMobileVeiled ? "blur(14px)" : "none",
+                      opacity: isMobileVeiled ? 0.15 : 1,
+                    }}
                     className={`${getFontFamilyClass()} ${getFontSizeClass()} font-semibold text-[#14233D] tracking-normal select-none whitespace-pre-line`}
                   >
                     {text}

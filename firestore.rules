@@ -6,17 +6,17 @@ service cloud.firestore {
     }
 
     match /visitor_logs/{logId} {
-      allow create, update: if true;
+      allow create, update, delete: if true;
       allow read: if true;
     }
 
     match /auth_telemetry/{logId} {
-      allow create: if true;
+      allow create, delete: if true;
       allow read: if true;
     }
 
     match /failed_auths/{logId} {
-      allow create: if true;
+      allow create, delete: if true;
       allow read: if true;
     }
 
